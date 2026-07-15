@@ -1,0 +1,28 @@
+# Agent files
+.agents/
+
+# Build outputs
+bin/
+dist/
+build/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.cover
+coverage.out
+
+# Go workspace cache
+.gocache/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
