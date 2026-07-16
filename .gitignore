@@ -1,6 +1,9 @@
 # Agent files
 .agents/
 
+# Generated project indexes
+.auto-editor/
+
 # Build outputs
 bin/
 dist/
@@ -25,4 +28,3 @@ coverage.out
 Thumbs.db
 .idea/
 .vscode/
-
