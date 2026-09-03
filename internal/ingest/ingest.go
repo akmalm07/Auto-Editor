@@ -19,12 +19,13 @@ import (
 
 const (
 	DefaultIndexPath = ".auto-editor/index.json"
-	IndexVersion     = 1
+	IndexVersion     = 2
 )
 
 type Index struct {
 	Version       int                 `json:"version"`
 	ProjectName   string              `json:"project_name"`
+	Language      string              `json:"language,omitempty"`
 	ManifestPath  string              `json:"manifest_path"`
 	ProjectRoot   string              `json:"project_root"`
 	GeneratedAt   time.Time           `json:"generated_at"`
@@ -96,6 +97,7 @@ func BuildIndexWithProgress(manifestPath string, report StageReporter) (Index, e
 		index: Index{
 			Version:      IndexVersion,
 			ProjectName:  manifest.Name,
+			Language:     manifest.Language,
 			ManifestPath: displayPath(root, absoluteManifestPath),
 			ProjectRoot:  cleanPath(root),
 			GeneratedAt:  time.Now().UTC(),
@@ -134,6 +136,22 @@ func WriteIndex(path string, index Index) error {
 
 	data = append(data, '\n')
 	return os.WriteFile(path, data, 0o644)
+}
+
+func ReadIndex(path string) (Index, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Index{}, err
+	}
+
+	var index Index
+	if err := json.Unmarshal(data, &index); err != nil {
+		return Index{}, err
+	}
+	if index.Version != IndexVersion {
+		return Index{}, fmt.Errorf("unsupported index version %d", index.Version)
+	}
+	return index, nil
 }
 
 type indexBuilder struct {
@@ -412,7 +430,7 @@ func buildRecord(root, source, absolutePath string, info os.FileInfo) (FileRecor
 		kind = KindUnknown
 	}
 
-	hash, err := fileSHA256(absolutePath)
+	hash, err := FileSHA256(absolutePath)
 	if err != nil {
 		return FileRecord{}, err
 	}
@@ -429,7 +447,7 @@ func buildRecord(root, source, absolutePath string, info os.FileInfo) (FileRecor
 	}, nil
 }
 
-func fileSHA256(path string) (string, error) {
+func FileSHA256(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err

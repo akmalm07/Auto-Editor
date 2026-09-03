@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,7 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"auto-editor/internal/alignment"
+	"auto-editor/internal/analyzeassets"
+	"auto-editor/internal/analyzestyle"
 	"auto-editor/internal/app"
+	"auto-editor/internal/asr/openai"
+	assetopenai "auto-editor/internal/assetvision/openai"
 	"auto-editor/internal/config"
 	"auto-editor/internal/ingest"
 	"auto-editor/internal/project"
@@ -48,6 +54,12 @@ func Run(args []string, ctx app.App) error {
 		return runInit(args[1:], ctx)
 	case "ingest":
 		return runIngest(args[1:], ctx)
+	case "align":
+		return runAlign(args[1:], ctx)
+	case "analyze-assets":
+		return runAnalyzeAssets(args[1:], ctx)
+	case "analyze-style":
+		return runAnalyzeStyle(args[1:], ctx)
 	case "plan":
 		return runPlaceholder("plan", ctx)
 	case "render":
@@ -58,6 +70,117 @@ func Run(args []string, ctx app.App) error {
 		printRootUsage(ctx)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runAnalyzeStyle(args []string, ctx app.App) error {
+	fs := flag.NewFlagSet("analyze-style", flag.ContinueOnError)
+	fs.SetOutput(ctx.Err)
+	indexPath := fs.String("index", ingest.DefaultIndexPath, "ingest index path")
+	configPath := fs.String("config", config.DefaultConfigName, "config file path")
+	outputPath := fs.String("out", analyzestyle.DefaultStylePath, "style analysis output path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *indexPath == "" || *configPath == "" || *outputPath == "" {
+		return fmt.Errorf("index, config, and output paths cannot be empty")
+	}
+	cfg, err := config.Read(*configPath)
+	if err != nil {
+		return err
+	}
+	ui := newPresenter(ctx.Out, ctx.Err, cfg)
+	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	session.Start("Preparing style analysis")
+	result, err := analyzestyle.Build(context.Background(), analyzestyle.Options{IndexPath: *indexPath, FFprobe: cfg.Assets.FFprobe, FFmpeg: cfg.Assets.FFmpeg}, analyzestyle.Dependencies{}, func(current, total int, message string) {
+		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
+	})
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	resolvedOutputPath, err := resolveAlignmentOutputPath(*indexPath, *outputPath)
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Update("Writing style analysis")
+	if err := analyzestyle.Write(resolvedOutputPath, result); err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Stop("")
+	ui.Diagnostics(result.Warnings)
+	ui.Success(fmt.Sprintf("analyzed %d reference set(s)", len(result.ReferenceSets)))
+	ui.Success(fmt.Sprintf("created %s", filepath.Clean(resolvedOutputPath)))
+	return nil
+}
+
+func runAnalyzeAssets(args []string, ctx app.App) error {
+	fs := flag.NewFlagSet("analyze-assets", flag.ContinueOnError)
+	fs.SetOutput(ctx.Err)
+	indexPath := fs.String("index", ingest.DefaultIndexPath, "ingest index path")
+	configPath := fs.String("config", config.DefaultConfigName, "config file path")
+	outputPath := fs.String("out", analyzeassets.DefaultAssetsPath, "asset analysis output path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *indexPath == "" || *configPath == "" || *outputPath == "" {
+		return fmt.Errorf("index, config, and output paths cannot be empty")
+	}
+	cfg, err := config.Read(*configPath)
+	if err != nil {
+		return err
+	}
+	ui := newPresenter(ctx.Out, ctx.Err, cfg)
+	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	deps := analyzeassets.Dependencies{}
+	semanticEnabled := cfg.Assets.SemanticProvider == "openai"
+	if semanticEnabled {
+		apiKey, ok := os.LookupEnv(cfg.Assets.APIKeyEnvironment)
+		if !ok || strings.TrimSpace(apiKey) == "" {
+			semanticEnabled = false
+			fmt.Fprintf(ctx.Err, "warning: semantic analysis skipped because environment variable %s is not set\n", cfg.Assets.APIKeyEnvironment)
+		} else {
+			deps.SemanticAnalyzer = assetopenai.Client{APIKey: apiKey, Model: cfg.Assets.SemanticModel}
+		}
+	}
+	session.Start("Preparing asset analysis")
+	result, err := analyzeassets.Build(context.Background(), analyzeassets.Options{IndexPath: *indexPath, FFprobe: cfg.Assets.FFprobe, FFmpeg: cfg.Assets.FFmpeg, SemanticEnabled: semanticEnabled}, deps, func(current, total int, message string) {
+		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
+	})
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	resolvedOutputPath, err := resolveAlignmentOutputPath(*indexPath, *outputPath)
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Update("Writing asset analysis")
+	if err := analyzeassets.Write(resolvedOutputPath, result); err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Stop("")
+	ui.Diagnostics(result.Warnings)
+	semanticComplete, visualAssets := 0, 0
+	for _, asset := range result.Assets {
+		if asset.Kind == ingest.KindImage || asset.Kind == ingest.KindVideo {
+			visualAssets++
+			if asset.Literal.Status == "complete" && asset.Editorial.Status == "complete" {
+				semanticComplete++
+			}
+		}
+	}
+	ui.Success(fmt.Sprintf("analyzed %d asset(s) deterministically", len(result.Assets)))
+	if semanticComplete == visualAssets {
+		ui.Success(fmt.Sprintf("completed semantic analysis for %d visual asset(s)", semanticComplete))
+	} else {
+		fmt.Fprintf(ctx.Err, "warning: semantic analysis completed for %d of %d visual asset(s); see diagnostics\n", semanticComplete, visualAssets)
+	}
+	ui.Success(fmt.Sprintf("created %s", filepath.Clean(resolvedOutputPath)))
+	return nil
 }
 
 func runInit(args []string, ctx app.App) error {
@@ -202,6 +325,59 @@ func runIngest(args []string, ctx app.App) error {
 	return nil
 }
 
+func runAlign(args []string, ctx app.App) error {
+	fs := flag.NewFlagSet("align", flag.ContinueOnError)
+	fs.SetOutput(ctx.Err)
+	indexPath := fs.String("index", ingest.DefaultIndexPath, "ingest index path")
+	configPath := fs.String("config", config.DefaultConfigName, "config file path")
+	outputPath := fs.String("out", alignment.DefaultAlignmentPath, "alignment output path")
+	ffprobePath := fs.String("ffprobe", "ffprobe", "ffprobe executable")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *indexPath == "" || *configPath == "" || *outputPath == "" || *ffprobePath == "" {
+		return fmt.Errorf("index, config, output, and ffprobe paths cannot be empty")
+	}
+
+	cfg, err := config.Read(*configPath)
+	if err != nil {
+		return err
+	}
+	apiKey, ok := os.LookupEnv(cfg.Alignment.APIKeyEnvironment)
+	if !ok || strings.TrimSpace(apiKey) == "" {
+		return fmt.Errorf("alignment requires an API key in environment variable %s", cfg.Alignment.APIKeyEnvironment)
+	}
+	ui := newPresenter(ctx.Out, ctx.Err, cfg)
+	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	session.Start("Preparing alignment")
+	result, err := alignment.Build(context.Background(), alignment.Options{
+		IndexPath: *indexPath, FFprobe: *ffprobePath, MinSimilarity: cfg.Alignment.MinSimilarity,
+	}, alignment.Dependencies{
+		Transcriber: openai.Client{APIKey: apiKey, Model: cfg.Alignment.Model},
+	}, func(current, total int, message string) {
+		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
+	})
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	resolvedOutputPath, err := resolveAlignmentOutputPath(*indexPath, *outputPath)
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Update("Writing alignment")
+	if err := alignment.Write(resolvedOutputPath, result); err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Stop("")
+	ui.Diagnostics(result.Warnings)
+	ui.Success(fmt.Sprintf("aligned %d/%d script words (similarity %.2f)", result.Metrics.MatchedWords, result.Metrics.ScriptWords, result.Metrics.Similarity))
+	ui.Success(fmt.Sprintf("created %s", filepath.Clean(resolvedOutputPath)))
+	return nil
+}
+
 type silentError struct{}
 
 func (silentError) Error() string {
@@ -252,6 +428,17 @@ func resolveOutputPath(manifestPath, outputPath string) (string, error) {
 	return filepath.Clean(filepath.Join(filepath.Dir(absoluteManifestPath), outputPath)), nil
 }
 
+func resolveAlignmentOutputPath(indexPath, outputPath string) (string, error) {
+	if filepath.IsAbs(outputPath) {
+		return filepath.Clean(outputPath), nil
+	}
+	index, err := ingest.ReadIndex(indexPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(index.ProjectRoot, outputPath)), nil
+}
+
 func runPlaceholder(name string, ctx app.App) error {
 	fmt.Fprintf(ctx.Out, "%s is scaffolded but not implemented yet\n", strings.ToLower(name))
 	return nil
@@ -266,6 +453,9 @@ Usage:
 Commands:
   init     create a project manifest
   ingest   validate project inputs and write an index
+  align    transcribe voiceover and align it to the script
+  analyze-assets  inspect assets and optionally analyze their visual content
+  analyze-style   measure reference-video style facts
   plan     draft an edit timeline
   render   render the current timeline
   review   score and revise a render
@@ -279,5 +469,8 @@ Init example:
 
 Ingest example:
   auto-editor ingest --manifest auto-editor.json --config auto-editor.config.json
+
+Align example:
+  auto-editor align --index .auto-editor/index.json --config auto-editor.config.json
 `, ctx.Name)
 }

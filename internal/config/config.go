@@ -11,7 +11,9 @@ import (
 const DefaultConfigName = "auto-editor.config.json"
 
 type Config struct {
-	UI UIConfig `json:"ui"`
+	UI        UIConfig        `json:"ui"`
+	Alignment AlignmentConfig `json:"alignment"`
+	Assets    AssetsConfig    `json:"assets"`
 }
 
 type UIConfig struct {
@@ -26,6 +28,21 @@ type LoadingConfig struct {
 	IntervalMS int    `json:"interval_ms"`
 }
 
+type AlignmentConfig struct {
+	Provider          string  `json:"provider"`
+	Model             string  `json:"model"`
+	APIKeyEnvironment string  `json:"api_key_environment"`
+	MinSimilarity     float64 `json:"min_similarity"`
+}
+
+type AssetsConfig struct {
+	FFprobe           string `json:"ffprobe"`
+	FFmpeg            string `json:"ffmpeg"`
+	SemanticProvider  string `json:"semantic_provider"`
+	SemanticModel     string `json:"semantic_model"`
+	APIKeyEnvironment string `json:"api_key_environment"`
+}
+
 func Default() Config {
 	return Config{
 		UI: UIConfig{
@@ -36,6 +53,19 @@ func Default() Config {
 				Style:      "ascii",
 				IntervalMS: 80,
 			},
+		},
+		Alignment: AlignmentConfig{
+			Provider:          "openai",
+			Model:             "whisper-1",
+			APIKeyEnvironment: "OPENAI_API_KEY",
+			MinSimilarity:     0.70,
+		},
+		Assets: AssetsConfig{
+			FFprobe:           "ffprobe",
+			FFmpeg:            "ffmpeg",
+			SemanticProvider:  "none",
+			SemanticModel:     "gpt-4.1-mini",
+			APIKeyEnvironment: "OPENAI_API_KEY",
 		},
 	}
 }
@@ -74,6 +104,38 @@ func (c Config) Validate() error {
 
 	if c.UI.Loading.IntervalMS < 0 {
 		return fmt.Errorf("ui.loading.interval_ms must be non-negative")
+	}
+
+	switch c.Alignment.Provider {
+	case "", "openai":
+	default:
+		return fmt.Errorf("invalid alignment.provider %q: expected openai", c.Alignment.Provider)
+	}
+	if c.Alignment.Model != "" && c.Alignment.Model != "whisper-1" {
+		return fmt.Errorf("invalid alignment.model %q: whisper-1 is currently required for word timestamps", c.Alignment.Model)
+	}
+	if c.Alignment.MinSimilarity < 0 || c.Alignment.MinSimilarity > 1 {
+		return fmt.Errorf("alignment.min_similarity must be between 0 and 1")
+	}
+
+	if c.Assets.FFprobe == "" {
+		return fmt.Errorf("assets.ffprobe cannot be empty")
+	}
+	if c.Assets.FFmpeg == "" {
+		return fmt.Errorf("assets.ffmpeg cannot be empty")
+	}
+	switch c.Assets.SemanticProvider {
+	case "", "none", "openai":
+	default:
+		return fmt.Errorf("invalid assets.semantic_provider %q: expected none or openai", c.Assets.SemanticProvider)
+	}
+	if c.Assets.SemanticProvider == "openai" {
+		if c.Assets.SemanticModel == "" {
+			return fmt.Errorf("assets.semantic_model is required when semantic_provider is openai")
+		}
+		if c.Assets.APIKeyEnvironment == "" {
+			return fmt.Errorf("assets.api_key_environment is required when semantic_provider is openai")
+		}
 	}
 
 	return nil

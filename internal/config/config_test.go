@@ -27,6 +27,22 @@ func TestReadMissingConfigReturnsDefault(t *testing.T) {
 	if cfg.UI.Loading.IntervalMS != 80 {
 		t.Fatalf("expected default loading interval 80, got %d", cfg.UI.Loading.IntervalMS)
 	}
+	if cfg.Alignment.Provider != "openai" || cfg.Alignment.Model != "whisper-1" || cfg.Alignment.MinSimilarity != 0.70 {
+		t.Fatalf("unexpected alignment defaults: %#v", cfg.Alignment)
+	}
+	if cfg.Assets.FFprobe != "ffprobe" || cfg.Assets.FFmpeg != "ffmpeg" || cfg.Assets.SemanticProvider != "none" {
+		t.Fatalf("unexpected asset defaults: %#v", cfg.Assets)
+	}
+}
+
+func TestReadRejectsUnsupportedAlignmentModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultConfigName)
+	if err := os.WriteFile(path, []byte(`{"alignment":{"model":"gpt-4o-transcribe"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(path); err == nil {
+		t.Fatal("expected unsupported model error")
+	}
 }
 
 func TestReadRejectsInvalidColorMode(t *testing.T) {
@@ -37,5 +53,15 @@ func TestReadRejectsInvalidColorMode(t *testing.T) {
 
 	if _, err := Read(path); err == nil {
 		t.Fatal("expected invalid color mode error")
+	}
+}
+
+func TestReadRejectsOpenAISemanticProviderWithoutModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultConfigName)
+	if err := os.WriteFile(path, []byte(`{"assets":{"semantic_provider":"openai","semantic_model":""}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(path); err == nil {
+		t.Fatal("expected invalid semantic configuration")
 	}
 }
