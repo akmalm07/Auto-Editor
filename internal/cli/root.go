@@ -17,6 +17,7 @@ import (
 	assetopenai "auto-editor/internal/assetvision/openai"
 	"auto-editor/internal/config"
 	"auto-editor/internal/ingest"
+	"auto-editor/internal/plan"
 	"auto-editor/internal/project"
 	"auto-editor/internal/ui/loading"
 )
@@ -61,7 +62,7 @@ func Run(args []string, ctx app.App) error {
 	case "analyze-style":
 		return runAnalyzeStyle(args[1:], ctx)
 	case "plan":
-		return runPlaceholder("plan", ctx)
+		return runPlan(args[1:], ctx)
 	case "render":
 		return runPlaceholder("render", ctx)
 	case "review":
@@ -437,6 +438,44 @@ func resolveAlignmentOutputPath(indexPath, outputPath string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(filepath.Join(index.ProjectRoot, outputPath)), nil
+}
+
+func runPlan(args []string, ctx app.App) error {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	fs.SetOutput(ctx.Err)
+	indexPath := fs.String("index", ingest.DefaultIndexPath, "ingest index path")
+	assetsPath := fs.String("assets", analyzeassets.DefaultAssetsPath, "asset analysis path")
+	stylePath := fs.String("style", analyzestyle.DefaultStylePath, "style analysis path")
+	outputPath := fs.String("out", plan.DefaultPlanPath, "plan output path")
+	aspect := fs.String("aspect", "16:9", "output aspect ratio")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Read(config.DefaultConfigName)
+	if err != nil {
+		return err
+	}
+	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	session.Start("Preparing edit plan")
+	result, err := plan.Build(context.Background(), plan.Options{AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect}, func(current, total int, message string) {
+		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
+	})
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	out := filepath.Join(filepath.Dir(*indexPath), *outputPath)
+	if filepath.IsAbs(*outputPath) {
+		out = *outputPath
+	}
+	if err := plan.Write(out, result); err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Stop("")
+	newPresenter(ctx.Out, ctx.Err, cfg).Diagnostics(result.Warnings)
+	fmt.Fprintf(ctx.Out, "ok: created %s\n", filepath.Clean(out))
+	return nil
 }
 
 func runPlaceholder(name string, ctx app.App) error {
