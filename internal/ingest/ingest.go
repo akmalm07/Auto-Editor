@@ -3,7 +3,6 @@ package ingest
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"auto-editor/internal/artifact"
 	"auto-editor/internal/project"
 )
 
@@ -125,27 +125,12 @@ func BuildIndexWithProgress(manifestPath string, report StageReporter) (Index, e
 }
 
 func WriteIndex(path string, index Index) error {
-	data, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return artifact.Write(path, index)
 }
 
 func ReadIndex(path string) (Index, error) {
-	data, err := os.ReadFile(path)
+	index, err := artifact.Read[Index](path)
 	if err != nil {
-		return Index{}, err
-	}
-
-	var index Index
-	if err := json.Unmarshal(data, &index); err != nil {
 		return Index{}, err
 	}
 	if index.Version != IndexVersion {
@@ -459,6 +444,17 @@ func FileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func VerifyRecord(path string, record FileRecord) error {
+	hash, err := FileSHA256(path)
+	if err != nil {
+		return err
+	}
+	if hash != record.SHA256 {
+		return fmt.Errorf("file content hash no longer matches index")
+	}
+	return nil
 }
 
 func validateUTF8(path string) error {

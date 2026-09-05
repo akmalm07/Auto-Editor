@@ -2,11 +2,10 @@ package analyzestyle
 
 import (
 	"auto-editor/internal/analyzeassets"
+	"auto-editor/internal/artifact"
 	"auto-editor/internal/ingest"
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,7 +14,7 @@ import (
 
 const (
 	DefaultStylePath = ".auto-editor/style.json"
-	Version          = 1
+	Version          = 2
 )
 
 type Result struct {
@@ -31,6 +30,7 @@ type ReferenceSet struct {
 	Name     string              `json:"name"`
 	Files    []FileEvidence      `json:"files"`
 	Profile  TechnicalStyle      `json:"technical_style"`
+	Semantic SemanticStyle       `json:"semantic_style"`
 	Warnings []ingest.Diagnostic `json:"warnings,omitempty"`
 }
 
@@ -58,29 +58,67 @@ type AspectRatioStat struct {
 	Count int    `json:"count"`
 }
 
+type SemanticStyle struct {
+	Status              string          `json:"status"`
+	Summary             string          `json:"summary,omitempty"`
+	CaptionConventions  []string        `json:"caption_conventions,omitempty"`
+	HumorPatterns       []string        `json:"humor_patterns,omitempty"`
+	EmotionalPacing     []string        `json:"emotional_pacing,omitempty"`
+	VisualRoles         []string        `json:"visual_roles,omitempty"`
+	EditingTechniques   []string        `json:"editing_techniques,omitempty"`
+	PlanningPreferences []string        `json:"planning_preferences,omitempty"`
+	SupportingFrameIDs  []string        `json:"supporting_frame_ids,omitempty"`
+	Confidence          string          `json:"confidence,omitempty"`
+	SampledFrames       []SemanticFrame `json:"sampled_frames,omitempty"`
+}
+
+type SemanticFrame struct {
+	ID          string `json:"id"`
+	Path        string `json:"path"`
+	TimestampMS int64  `json:"timestamp_ms"`
+}
+
+type SemanticRequest struct {
+	ReferenceSet string
+	Technical    TechnicalStyle
+	Frames       []SemanticFrame
+	FramePaths   []string
+}
+
 type SceneDetector interface {
 	Detect(path, executable string) ([]int64, error)
 }
-type Dependencies struct {
-	Inspector     analyzeassets.Inspector
-	SceneDetector SceneDetector
+type SemanticAnalyzer interface {
+	AnalyzeStyle(context.Context, SemanticRequest) (SemanticStyle, error)
 }
-type Options struct{ IndexPath, FFprobe, FFmpeg string }
+type Dependencies struct {
+	Inspector        analyzeassets.Inspector
+	SceneDetector    SceneDetector
+	FrameExtractor   analyzeassets.FrameExtractor
+	SemanticAnalyzer SemanticAnalyzer
+}
+type Options struct {
+	IndexPath, FFprobe, FFmpeg, ThumbnailDir string
+	SemanticEnabled                          bool
+	SemanticMaxFrames                        int
+}
 type StageReporter func(current, total int, message string)
 
 func Build(ctx context.Context, options Options, deps Dependencies, report StageReporter) (Result, error) {
-	_ = ctx
 	if deps.Inspector == nil {
 		deps.Inspector = analyzeassets.SystemInspector{}
 	}
 	if deps.SceneDetector == nil {
 		deps.SceneDetector = SystemSceneDetector{}
 	}
+	if deps.FrameExtractor == nil {
+		deps.FrameExtractor = analyzeassets.SystemFrameExtractor{}
+	}
 	index, err := ingest.ReadIndex(options.IndexPath)
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{Version: Version, ProjectName: index.ProjectName, IndexPath: displayPath(index.ProjectRoot, options.IndexPath), GeneratedAt: time.Now().UTC()}
+	result := Result{Version: Version, ProjectName: index.ProjectName, IndexPath: artifact.DisplayPath(index.ProjectRoot, options.IndexPath), GeneratedAt: time.Now().UTC()}
 	total := 0
 	for _, set := range index.ReferenceSets {
 		total += len(set.Files)
@@ -90,14 +128,14 @@ func Build(ctx context.Context, options Options, deps Dependencies, report Stage
 	}
 	current := 0
 	for _, indexedSet := range index.ReferenceSets {
-		set := ReferenceSet{Name: indexedSet.Name}
+		set := ReferenceSet{Name: indexedSet.Name, Semantic: SemanticStyle{Status: "skipped"}}
 		for _, record := range indexedSet.Files {
 			current++
 			if report != nil {
 				report(current, total, fmt.Sprintf("Analyzing reference %d/%d: %s", current, total, record.Path))
 			}
-			path := resolvePath(index.ProjectRoot, record.Path)
-			if err := verifyRecord(path, record); err != nil {
+			path := artifact.ResolvePath(index.ProjectRoot, record.Path)
+			if err := ingest.VerifyRecord(path, record); err != nil {
 				return Result{}, fmt.Errorf("reference video %s changed since ingest: %w; run ingest again", record.Path, err)
 			}
 			technical, err := deps.Inspector.Inspect(path, record.Kind, options.FFprobe)
@@ -116,9 +154,111 @@ func Build(ctx context.Context, options Options, deps Dependencies, report Stage
 			set.Files = append(set.Files, FileEvidence{FileID: record.ID, Path: record.Path, SHA256: record.SHA256, Technical: technical, CutTimestampsMS: cuts})
 		}
 		set.Profile = profile(set.Files)
+		if options.SemanticEnabled {
+			if report != nil {
+				report(total, total, "Analyzing semantic style for reference set "+set.Name)
+			}
+			semantic, diagnostic := semanticStyle(ctx, index.ProjectRoot, set, options, deps)
+			set.Semantic = semantic
+			if diagnostic != nil {
+				set.Warnings = append(set.Warnings, *diagnostic)
+				result.Warnings = append(result.Warnings, *diagnostic)
+			}
+		}
 		result.ReferenceSets = append(result.ReferenceSets, set)
 	}
 	return result, nil
+}
+
+func semanticStyle(ctx context.Context, root string, set ReferenceSet, options Options, deps Dependencies) (SemanticStyle, *ingest.Diagnostic) {
+	if deps.SemanticAnalyzer == nil {
+		diagnostic := warning("reference_sets."+set.Name+".semantic", "semantic style analysis was not configured", "")
+		return SemanticStyle{Status: "skipped"}, &diagnostic
+	}
+	frames, err := sampleSemanticFrames(root, set, options, deps.FrameExtractor)
+	if err != nil {
+		diagnostic := warning("reference_sets."+set.Name+".semantic", "could not extract style frames: "+err.Error(), "")
+		return SemanticStyle{Status: "failed"}, &diagnostic
+	}
+	framePaths := make([]string, 0, len(frames))
+	for _, frame := range frames {
+		framePaths = append(framePaths, artifact.ResolvePath(root, frame.Path))
+	}
+	semantic, err := deps.SemanticAnalyzer.AnalyzeStyle(ctx, SemanticRequest{ReferenceSet: set.Name, Technical: set.Profile, Frames: frames, FramePaths: framePaths})
+	if err != nil {
+		diagnostic := warning("reference_sets."+set.Name+".semantic", "semantic style analysis failed: "+err.Error(), "")
+		return SemanticStyle{Status: "failed", SampledFrames: frames}, &diagnostic
+	}
+	semantic.Status = "complete"
+	semantic.SampledFrames = frames
+	semantic.SupportingFrameIDs = validFrameIDs(semantic.SupportingFrameIDs, frames)
+	return semantic, nil
+}
+
+func sampleSemanticFrames(root string, set ReferenceSet, options Options, extractor analyzeassets.FrameExtractor) ([]SemanticFrame, error) {
+	maxFrames := options.SemanticMaxFrames
+	if maxFrames <= 0 {
+		maxFrames = 12
+	}
+	thumbnailDir := options.ThumbnailDir
+	if thumbnailDir == "" {
+		thumbnailDir = filepath.Join(root, ".auto-editor", "style-thumbnails")
+	}
+	candidates := make([][]semanticSample, len(set.Files))
+	for index, file := range set.Files {
+		candidates[index] = styleSamples(file)
+	}
+	frames := make([]SemanticFrame, 0, maxFrames)
+	for sampleIndex := 0; len(frames) < maxFrames; sampleIndex++ {
+		added := false
+		for fileIndex, file := range set.Files {
+			if sampleIndex >= len(candidates[fileIndex]) || len(frames) == maxFrames {
+				continue
+			}
+			sample := candidates[fileIndex][sampleIndex]
+			outputPath := filepath.Join(thumbnailDir, file.FileID+"-"+sample.Position+".jpg")
+			if err := extractor.Extract(artifact.ResolvePath(root, file.Path), outputPath, options.FFmpeg, sample.TimestampMS); err != nil {
+				return nil, err
+			}
+			frames = append(frames, SemanticFrame{ID: file.FileID + "/" + sample.Position, Path: artifact.DisplayPath(root, outputPath), TimestampMS: sample.TimestampMS})
+			added = true
+		}
+		if !added {
+			break
+		}
+	}
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("reference set has no sampleable videos")
+	}
+	return frames, nil
+}
+
+type semanticSample struct {
+	Position    string
+	TimestampMS int64
+}
+
+func styleSamples(file FileEvidence) []semanticSample {
+	duration := file.Technical.DurationMS
+	samples := []semanticSample{{"start", duration / 10}, {"middle", duration / 2}, {"end", duration * 9 / 10}}
+	if len(file.CutTimestampsMS) > 0 {
+		samples = append(samples, semanticSample{Position: "cut", TimestampMS: file.CutTimestampsMS[len(file.CutTimestampsMS)/2]})
+	}
+	return samples
+}
+
+func validFrameIDs(ids []string, frames []SemanticFrame) []string {
+	available := make(map[string]bool, len(frames))
+	for _, frame := range frames {
+		available[frame.ID] = true
+	}
+	valid := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if available[id] {
+			valid = append(valid, id)
+		}
+	}
+	return valid
 }
 
 func profile(files []FileEvidence) TechnicalStyle {
@@ -171,41 +311,7 @@ func profile(files []FileEvidence) TechnicalStyle {
 }
 
 func Write(path string, result Result) error {
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-func verifyRecord(path string, record ingest.FileRecord) error {
-	hash, err := ingest.FileSHA256(path)
-	if err != nil {
-		return err
-	}
-	if hash != record.SHA256 {
-		return fmt.Errorf("file content hash no longer matches index")
-	}
-	return nil
-}
-func resolvePath(root, path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Join(root, filepath.FromSlash(path))
-}
-func displayPath(root, path string) string {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.ToSlash(filepath.Clean(path))
-	}
-	relative, err := filepath.Rel(root, absolute)
-	if err == nil && !strings.HasPrefix(relative, "..") {
-		return filepath.ToSlash(relative)
-	}
-	return filepath.ToSlash(absolute)
+	return artifact.Write(path, result)
 }
 func warning(field, message, path string) ingest.Diagnostic {
 	return ingest.Diagnostic{Level: "warning", Field: field, Message: message, Path: path}

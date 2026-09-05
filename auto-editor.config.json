@@ -1,0 +1,17 @@
+{
+  "ui": {
+    "color": "auto",
+    "progress": true,
+    "loading": {
+      "enabled": true,
+      "style": "ascii",
+      "interval_ms": 80
+    }
+  },
+  "alignment": {
+    "provider": "openai",
+    "model": "whisper-1",
+    "api_key_environment": "OPENAI_API_KEY",
+    "min_similarity": 0.7
+  }
+}

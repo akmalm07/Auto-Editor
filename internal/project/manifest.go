@@ -1,9 +1,7 @@
 package project
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
+	"auto-editor/internal/artifact"
 	"time"
 )
 
@@ -41,29 +39,9 @@ func NewManifest(name string) Manifest {
 }
 
 func WriteManifest(path string, manifest Manifest) error {
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return artifact.Write(path, manifest)
 }
 
 func ReadManifest(path string) (Manifest, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Manifest{}, err
-	}
-
-	var manifest Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return Manifest{}, err
-	}
-
-	return manifest, nil
+	return artifact.Read[Manifest](path)
 }

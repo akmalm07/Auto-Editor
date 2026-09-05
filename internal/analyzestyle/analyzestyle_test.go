@@ -17,6 +17,29 @@ type fakeInspector struct {
 
 type fakeSceneDetector struct{ values map[string][]int64 }
 
+type fakeStyleFrameExtractor struct{}
+
+func (fakeStyleFrameExtractor) Extract(videoPath, outputPath, executable string, timestampMS int64) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(outputPath, []byte("frame"), 0o644)
+}
+
+type fakeStyleSemantic struct{ request SemanticRequest }
+
+func (f *fakeStyleSemantic) AnalyzeStyle(ctx context.Context, request SemanticRequest) (SemanticStyle, error) {
+	f.request = request
+	return SemanticStyle{Summary: "fast meme-driven edits", Confidence: "high", SupportingFrameIDs: []string{request.Frames[0].ID, "unknown/frame"}}, nil
+}
+
+type countingStyleSemantic struct{ calls int }
+
+func (f *countingStyleSemantic) AnalyzeStyle(ctx context.Context, request SemanticRequest) (SemanticStyle, error) {
+	f.calls++
+	return SemanticStyle{Summary: "cached"}, nil
+}
+
 func (f fakeSceneDetector) Detect(path, executable string) ([]int64, error) {
 	return f.values[filepath.Base(path)], nil
 }
@@ -50,6 +73,52 @@ func TestBuildRejectsChangedReference(t *testing.T) {
 	_, err := Build(context.Background(), Options{IndexPath: indexPath}, Dependencies{Inspector: fakeInspector{}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "run ingest again") {
 		t.Fatalf("expected stale-index error, got %v", err)
+	}
+}
+
+func TestBuildAddsBoundedSemanticStyleEvidence(t *testing.T) {
+	root := t.TempDir()
+	first := writeReference(t, root, "first.mp4", "first")
+	second := writeReference(t, root, "second.mp4", "second")
+	semantic := &fakeStyleSemantic{}
+	result, err := Build(context.Background(), Options{IndexPath: writeIndex(t, root, first, second), SemanticEnabled: true, SemanticMaxFrames: 3, ThumbnailDir: filepath.Join(root, "frames")}, Dependencies{
+		Inspector:        fakeInspector{values: map[string]analyzeassets.Technical{"first.mp4": {DurationMS: 1000}, "second.mp4": {DurationMS: 1000}}},
+		SceneDetector:    fakeSceneDetector{},
+		FrameExtractor:   fakeStyleFrameExtractor{},
+		SemanticAnalyzer: semantic,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	style := result.ReferenceSets[0].Semantic
+	if style.Status != "complete" || style.Summary == "" || len(style.SampledFrames) != 3 || len(style.SupportingFrameIDs) != 1 {
+		t.Fatalf("unexpected semantic style: %#v", style)
+	}
+	if semantic.request.Frames[0].ID != "reference_0/start" || semantic.request.Frames[1].ID != "reference_1/start" {
+		t.Fatalf("frames were not sampled round-robin: %#v", semantic.request.Frames)
+	}
+}
+
+func TestCachedSemanticAnalyzerReusesStyleResult(t *testing.T) {
+	root := t.TempDir()
+	frame := filepath.Join(root, "frame.jpg")
+	if err := os.WriteFile(frame, []byte("frame"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cache, err := LoadSemanticCache(filepath.Join(root, "style-semantic-cache.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	analyzer := &countingStyleSemantic{}
+	cached := CachedSemanticAnalyzer{Analyzer: analyzer, Cache: cache, Scope: "openai/gpt-test/style-v1"}
+	request := SemanticRequest{Technical: TechnicalStyle{CutsPerMinute: 30}, FramePaths: []string{frame}}
+	for range 2 {
+		if _, err := cached.AnalyzeStyle(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if analyzer.calls != 1 {
+		t.Fatalf("provider calls = %d, want 1", analyzer.calls)
 	}
 }
 

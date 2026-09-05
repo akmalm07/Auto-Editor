@@ -1,11 +1,11 @@
 package config
 
 import (
+	"auto-editor/internal/artifact"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 const DefaultConfigName = "auto-editor.config.json"
@@ -14,6 +14,7 @@ type Config struct {
 	UI        UIConfig        `json:"ui"`
 	Alignment AlignmentConfig `json:"alignment"`
 	Assets    AssetsConfig    `json:"assets"`
+	Style     StyleConfig     `json:"style"`
 }
 
 type UIConfig struct {
@@ -36,11 +37,26 @@ type AlignmentConfig struct {
 }
 
 type AssetsConfig struct {
-	FFprobe           string `json:"ffprobe"`
-	FFmpeg            string `json:"ffmpeg"`
-	SemanticProvider  string `json:"semantic_provider"`
-	SemanticModel     string `json:"semantic_model"`
-	APIKeyEnvironment string `json:"api_key_environment"`
+	FFprobe                string `json:"ffprobe"`
+	FFmpeg                 string `json:"ffmpeg"`
+	SemanticProvider       string `json:"semantic_provider"`
+	SemanticModel          string `json:"semantic_model"`
+	APIKeyEnvironment      string `json:"api_key_environment"`
+	SemanticCache          bool   `json:"semantic_cache"`
+	SemanticImageDetail    string `json:"semantic_image_detail"`
+	SemanticMaxAttempts    int    `json:"semantic_max_attempts"`
+	SemanticTimeoutSeconds int    `json:"semantic_timeout_seconds"`
+}
+
+type StyleConfig struct {
+	SemanticProvider       string `json:"semantic_provider"`
+	SemanticModel          string `json:"semantic_model"`
+	APIKeyEnvironment      string `json:"api_key_environment"`
+	SemanticCache          bool   `json:"semantic_cache"`
+	SemanticImageDetail    string `json:"semantic_image_detail"`
+	SemanticMaxFrames      int    `json:"semantic_max_frames"`
+	SemanticMaxAttempts    int    `json:"semantic_max_attempts"`
+	SemanticTimeoutSeconds int    `json:"semantic_timeout_seconds"`
 }
 
 func Default() Config {
@@ -61,11 +77,25 @@ func Default() Config {
 			MinSimilarity:     0.70,
 		},
 		Assets: AssetsConfig{
-			FFprobe:           "ffprobe",
-			FFmpeg:            "ffmpeg",
-			SemanticProvider:  "none",
-			SemanticModel:     "gpt-4.1-mini",
-			APIKeyEnvironment: "OPENAI_API_KEY",
+			FFprobe:                "ffprobe",
+			FFmpeg:                 "ffmpeg",
+			SemanticProvider:       "none",
+			SemanticModel:          "gpt-4.1-mini",
+			APIKeyEnvironment:      "OPENAI_API_KEY",
+			SemanticCache:          true,
+			SemanticImageDetail:    "auto",
+			SemanticMaxAttempts:    3,
+			SemanticTimeoutSeconds: 60,
+		},
+		Style: StyleConfig{
+			SemanticProvider:       "none",
+			SemanticModel:          "gpt-4.1-mini",
+			APIKeyEnvironment:      "OPENAI_API_KEY",
+			SemanticCache:          true,
+			SemanticImageDetail:    "auto",
+			SemanticMaxFrames:      12,
+			SemanticMaxAttempts:    3,
+			SemanticTimeoutSeconds: 60,
 		},
 	}
 }
@@ -124,6 +154,17 @@ func (c Config) Validate() error {
 	if c.Assets.FFmpeg == "" {
 		return fmt.Errorf("assets.ffmpeg cannot be empty")
 	}
+	switch c.Assets.SemanticImageDetail {
+	case "", "auto", "low", "high":
+	default:
+		return fmt.Errorf("invalid assets.semantic_image_detail %q: expected auto, low, or high", c.Assets.SemanticImageDetail)
+	}
+	if c.Assets.SemanticMaxAttempts < 1 || c.Assets.SemanticMaxAttempts > 5 {
+		return fmt.Errorf("assets.semantic_max_attempts must be between 1 and 5")
+	}
+	if c.Assets.SemanticTimeoutSeconds < 1 || c.Assets.SemanticTimeoutSeconds > 300 {
+		return fmt.Errorf("assets.semantic_timeout_seconds must be between 1 and 300")
+	}
 	switch c.Assets.SemanticProvider {
 	case "", "none", "openai":
 	default:
@@ -138,19 +179,37 @@ func (c Config) Validate() error {
 		}
 	}
 
+	switch c.Style.SemanticProvider {
+	case "", "none", "openai":
+	default:
+		return fmt.Errorf("invalid style.semantic_provider %q: expected none or openai", c.Style.SemanticProvider)
+	}
+	switch c.Style.SemanticImageDetail {
+	case "", "auto", "low", "high":
+	default:
+		return fmt.Errorf("invalid style.semantic_image_detail %q: expected auto, low, or high", c.Style.SemanticImageDetail)
+	}
+	if c.Style.SemanticMaxFrames < 1 || c.Style.SemanticMaxFrames > 24 {
+		return fmt.Errorf("style.semantic_max_frames must be between 1 and 24")
+	}
+	if c.Style.SemanticMaxAttempts < 1 || c.Style.SemanticMaxAttempts > 5 {
+		return fmt.Errorf("style.semantic_max_attempts must be between 1 and 5")
+	}
+	if c.Style.SemanticTimeoutSeconds < 1 || c.Style.SemanticTimeoutSeconds > 300 {
+		return fmt.Errorf("style.semantic_timeout_seconds must be between 1 and 300")
+	}
+	if c.Style.SemanticProvider == "openai" {
+		if c.Style.SemanticModel == "" {
+			return fmt.Errorf("style.semantic_model is required when semantic_provider is openai")
+		}
+		if c.Style.APIKeyEnvironment == "" {
+			return fmt.Errorf("style.api_key_environment is required when semantic_provider is openai")
+		}
+	}
+
 	return nil
 }
 
 func WriteDefault(path string) error {
-	data, err := json.MarshalIndent(Default(), "", "  ")
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return artifact.Write(path, Default())
 }

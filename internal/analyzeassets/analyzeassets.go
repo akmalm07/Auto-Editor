@@ -1,13 +1,11 @@
 package analyzeassets
 
 import (
+	"auto-editor/internal/artifact"
 	"auto-editor/internal/ingest"
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -73,8 +71,8 @@ type EditorialMeaning struct {
 }
 
 type SemanticAnalysis struct {
-	Literal   LiteralContent
-	Editorial EditorialMeaning
+	Literal   LiteralContent   `json:"literal"`
+	Editorial EditorialMeaning `json:"editorial_meaning"`
 }
 
 type Inspector interface {
@@ -111,15 +109,15 @@ func Build(ctx context.Context, options Options, deps Dependencies, report Stage
 	if len(index.Assets) == 0 {
 		return Result{}, fmt.Errorf("ingest index contains no assets")
 	}
-	result := Result{Version: Version, ProjectName: index.ProjectName, IndexPath: displayPath(index.ProjectRoot, options.IndexPath), GeneratedAt: time.Now().UTC()}
+	result := Result{Version: Version, ProjectName: index.ProjectName, IndexPath: artifact.DisplayPath(index.ProjectRoot, options.IndexPath), GeneratedAt: time.Now().UTC()}
 	total := len(index.Assets)
 	for i, record := range index.Assets {
 		if report != nil {
 			report(i+1, total, fmt.Sprintf("Analyzing asset %d/%d: %s", i+1, total, record.Path))
 		}
-		path := resolvePath(index.ProjectRoot, record.Path)
+		path := artifact.ResolvePath(index.ProjectRoot, record.Path)
 		asset := Asset{AssetID: record.ID, Path: record.Path, Kind: record.Kind, SHA256: record.SHA256, Literal: LiteralContent{Status: "not_applicable"}, Editorial: EditorialMeaning{Status: "not_applicable"}}
-		if err := verifyRecord(path, record); err != nil {
+		if err := ingest.VerifyRecord(path, record); err != nil {
 			return Result{}, fmt.Errorf("asset %s changed since ingest: %w; run ingest again", record.Path, err)
 		}
 		technical, err := deps.Inspector.Inspect(path, record.Kind, options.FFprobe)
@@ -158,7 +156,7 @@ func Build(ctx context.Context, options Options, deps Dependencies, report Stage
 						frameExtractionFailed = true
 						break
 					}
-					asset.Frames = append(asset.Frames, Frame{Position: sample.Position, Path: displayPath(index.ProjectRoot, framePath), TimestampMS: sample.TimestampMS})
+					asset.Frames = append(asset.Frames, Frame{Position: sample.Position, Path: artifact.DisplayPath(index.ProjectRoot, framePath), TimestampMS: sample.TimestampMS})
 					semanticPaths = append(semanticPaths, framePath)
 				}
 			}
@@ -196,43 +194,9 @@ func videoSamples(durationMS int64) []videoSample {
 }
 
 func Write(path string, result Result) error {
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-func verifyRecord(path string, record ingest.FileRecord) error {
-	hash, err := ingest.FileSHA256(path)
-	if err != nil {
-		return err
-	}
-	if hash != record.SHA256 {
-		return fmt.Errorf("file content hash no longer matches index")
-	}
-	return nil
+	return artifact.Write(path, result)
 }
 func isVisual(kind string) bool { return kind == ingest.KindImage || kind == ingest.KindVideo }
-func resolvePath(root, path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Join(root, filepath.FromSlash(path))
-}
-func displayPath(root, path string) string {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.ToSlash(filepath.Clean(path))
-	}
-	relative, err := filepath.Rel(root, absolute)
-	if err == nil && !strings.HasPrefix(relative, "..") {
-		return filepath.ToSlash(relative)
-	}
-	return filepath.ToSlash(absolute)
-}
 func warning(field, message, path string) ingest.Diagnostic {
 	return ingest.Diagnostic{Level: "warning", Field: field, Message: message, Path: path}
 }

@@ -1,14 +1,13 @@
 package alignment
 
 import (
+	"auto-editor/internal/artifact"
 	"auto-editor/internal/asr"
 	"auto-editor/internal/audio"
 	"auto-editor/internal/ingest"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -106,13 +105,13 @@ func Build(ctx context.Context, options Options, dependencies Dependencies, repo
 		return Result{}, fmt.Errorf("ingest index must contain a script and voiceover")
 	}
 
-	scriptPath := resolvePath(index.ProjectRoot, index.Script.Path)
-	voiceoverPath := resolvePath(index.ProjectRoot, index.Voiceover.Path)
+	scriptPath := artifact.ResolvePath(index.ProjectRoot, index.Script.Path)
+	voiceoverPath := artifact.ResolvePath(index.ProjectRoot, index.Voiceover.Path)
 	stage(2, "Checking indexed inputs")
-	if err := verifyRecord(scriptPath, *index.Script); err != nil {
+	if err := ingest.VerifyRecord(scriptPath, *index.Script); err != nil {
 		return Result{}, fmt.Errorf("script changed since ingest: %w; run ingest again", err)
 	}
-	if err := verifyRecord(voiceoverPath, *index.Voiceover); err != nil {
+	if err := ingest.VerifyRecord(voiceoverPath, *index.Voiceover); err != nil {
 		return Result{}, fmt.Errorf("voiceover changed since ingest: %w; run ingest again", err)
 	}
 	scriptBytes, err := os.ReadFile(scriptPath)
@@ -155,7 +154,7 @@ func Build(ctx context.Context, options Options, dependencies Dependencies, repo
 	result := Result{
 		Version:     Version,
 		ProjectName: index.ProjectName,
-		IndexPath:   displayPath(index.ProjectRoot, options.IndexPath),
+		IndexPath:   artifact.DisplayPath(index.ProjectRoot, options.IndexPath),
 		GeneratedAt: time.Now().UTC(),
 		Script:      Script{ID: index.Script.ID, Path: index.Script.Path, SHA256: index.Script.SHA256, Text: string(scriptBytes), WordCount: len(scriptTokens)},
 		Voiceover:   Voiceover{ID: index.Voiceover.ID, Path: index.Voiceover.Path, SHA256: index.Voiceover.SHA256, Audio: probe},
@@ -176,14 +175,7 @@ func Build(ctx context.Context, options Options, dependencies Dependencies, repo
 }
 
 func Write(path string, result Result) error {
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return artifact.Write(path, result)
 }
 
 type token struct {
@@ -340,36 +332,6 @@ func buildSegments(script, transcript []token, operations []operation) []Segment
 		segment.EndMS = spoken.EndMS
 	}
 	return segments
-}
-
-func verifyRecord(path string, record ingest.FileRecord) error {
-	hash, err := ingest.FileSHA256(path)
-	if err != nil {
-		return err
-	}
-	if hash != record.SHA256 {
-		return fmt.Errorf("file content hash no longer matches index")
-	}
-	return nil
-}
-
-func resolvePath(root, path string) string {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Join(root, filepath.FromSlash(path))
-}
-
-func displayPath(root, path string) string {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.ToSlash(filepath.Clean(path))
-	}
-	relative, err := filepath.Rel(root, absolute)
-	if err == nil && !strings.HasPrefix(relative, "..") {
-		return filepath.ToSlash(relative)
-	}
-	return filepath.ToSlash(absolute)
 }
 
 func warning(field, message string) ingest.Diagnostic {

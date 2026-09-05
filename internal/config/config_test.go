@@ -30,8 +30,21 @@ func TestReadMissingConfigReturnsDefault(t *testing.T) {
 	if cfg.Alignment.Provider != "openai" || cfg.Alignment.Model != "whisper-1" || cfg.Alignment.MinSimilarity != 0.70 {
 		t.Fatalf("unexpected alignment defaults: %#v", cfg.Alignment)
 	}
-	if cfg.Assets.FFprobe != "ffprobe" || cfg.Assets.FFmpeg != "ffmpeg" || cfg.Assets.SemanticProvider != "none" {
+	if cfg.Assets.FFprobe != "ffprobe" || cfg.Assets.FFmpeg != "ffmpeg" || cfg.Assets.SemanticProvider != "none" || !cfg.Assets.SemanticCache || cfg.Assets.SemanticImageDetail != "auto" || cfg.Assets.SemanticMaxAttempts != 3 || cfg.Assets.SemanticTimeoutSeconds != 60 {
 		t.Fatalf("unexpected asset defaults: %#v", cfg.Assets)
+	}
+	if cfg.Style.SemanticProvider != "none" || !cfg.Style.SemanticCache || cfg.Style.SemanticMaxFrames != 12 {
+		t.Fatalf("unexpected style defaults: %#v", cfg.Style)
+	}
+}
+
+func TestReadRejectsInvalidSemanticRequestSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultConfigName)
+	if err := os.WriteFile(path, []byte(`{"assets":{"semantic_image_detail":"tiny","semantic_max_attempts":6}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(path); err == nil {
+		t.Fatal("expected invalid semantic request settings")
 	}
 }
 

@@ -1,0 +1,14 @@
+{
+  "name": "test-vid",
+  "aspect_ratio": "16:9",
+  "language": "en",
+  "runtime": "60s",
+  "created_at": "2026-07-17T22:37:20.1209725Z",
+  "inputs": {
+    "script": "test-items/script.txt",
+    "voiceover": "test-items/audio-1.mp3",
+    "assets": [
+      "test-items/images.jpg"
+    ]
+  }
+}

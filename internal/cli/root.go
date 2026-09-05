@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"auto-editor/internal/alignment"
 	"auto-editor/internal/analyzeassets"
@@ -73,6 +74,15 @@ func Run(args []string, ctx app.App) error {
 	}
 }
 
+func newLoadingSession(ctx app.App, cfg config.Config) *loading.Session {
+	return loading.New(ctx.Out, loading.Settings{
+		Enabled:    cfg.UI.Loading.Enabled,
+		Style:      cfg.UI.Loading.Style,
+		IntervalMS: cfg.UI.Loading.IntervalMS,
+		TTY:        os.Stdout,
+	})
+}
+
 func runAnalyzeStyle(args []string, ctx app.App) error {
 	fs := flag.NewFlagSet("analyze-style", flag.ContinueOnError)
 	fs.SetOutput(ctx.Err)
@@ -90,9 +100,29 @@ func runAnalyzeStyle(args []string, ctx app.App) error {
 		return err
 	}
 	ui := newPresenter(ctx.Out, ctx.Err, cfg)
-	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	deps := analyzestyle.Dependencies{}
+	semanticEnabled := cfg.Style.SemanticProvider == "openai"
+	if semanticEnabled {
+		apiKey, ok := os.LookupEnv(cfg.Style.APIKeyEnvironment)
+		if !ok || strings.TrimSpace(apiKey) == "" {
+			semanticEnabled = false
+			fmt.Fprintf(ctx.Err, "warning: style semantic analysis skipped because environment variable %s is not set\n", cfg.Style.APIKeyEnvironment)
+		} else {
+			provider := assetopenai.Client{APIKey: apiKey, Model: cfg.Style.SemanticModel, ImageDetail: cfg.Style.SemanticImageDetail, MaxAttempts: cfg.Style.SemanticMaxAttempts, Timeout: time.Duration(cfg.Style.SemanticTimeoutSeconds) * time.Second}
+			deps.SemanticAnalyzer = assetopenai.StyleClient{Client: provider}
+			if cfg.Style.SemanticCache {
+				cache, err := analyzestyle.LoadSemanticCache(analyzestyle.DefaultSemanticCachePath(*indexPath))
+				if err != nil {
+					fmt.Fprintf(ctx.Err, "warning: style semantic cache unavailable: %v\n", err)
+				} else {
+					deps.SemanticAnalyzer = analyzestyle.CachedSemanticAnalyzer{Analyzer: deps.SemanticAnalyzer, Cache: cache, Scope: (assetopenai.StyleClient{Client: provider}).CacheScope()}
+				}
+			}
+		}
+	}
+	session := newLoadingSession(ctx, cfg)
 	session.Start("Preparing style analysis")
-	result, err := analyzestyle.Build(context.Background(), analyzestyle.Options{IndexPath: *indexPath, FFprobe: cfg.Assets.FFprobe, FFmpeg: cfg.Assets.FFmpeg}, analyzestyle.Dependencies{}, func(current, total int, message string) {
+	result, err := analyzestyle.Build(context.Background(), analyzestyle.Options{IndexPath: *indexPath, FFprobe: cfg.Assets.FFprobe, FFmpeg: cfg.Assets.FFmpeg, SemanticEnabled: semanticEnabled, SemanticMaxFrames: cfg.Style.SemanticMaxFrames}, deps, func(current, total int, message string) {
 		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
 	})
 	if err != nil {
@@ -112,6 +142,17 @@ func runAnalyzeStyle(args []string, ctx app.App) error {
 	session.Stop("")
 	ui.Diagnostics(result.Warnings)
 	ui.Success(fmt.Sprintf("analyzed %d reference set(s)", len(result.ReferenceSets)))
+	semanticComplete := 0
+	for _, set := range result.ReferenceSets {
+		if set.Semantic.Status == "complete" {
+			semanticComplete++
+		}
+	}
+	if semanticComplete > 0 {
+		ui.Success(fmt.Sprintf("completed semantic style analysis for %d reference set(s)", semanticComplete))
+	} else if cfg.Style.SemanticProvider == "openai" {
+		fmt.Fprintln(ctx.Err, "warning: semantic style analysis did not complete; see diagnostics")
+	}
 	ui.Success(fmt.Sprintf("created %s", filepath.Clean(resolvedOutputPath)))
 	return nil
 }
@@ -133,7 +174,7 @@ func runAnalyzeAssets(args []string, ctx app.App) error {
 		return err
 	}
 	ui := newPresenter(ctx.Out, ctx.Err, cfg)
-	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	session := newLoadingSession(ctx, cfg)
 	deps := analyzeassets.Dependencies{}
 	semanticEnabled := cfg.Assets.SemanticProvider == "openai"
 	if semanticEnabled {
@@ -142,7 +183,22 @@ func runAnalyzeAssets(args []string, ctx app.App) error {
 			semanticEnabled = false
 			fmt.Fprintf(ctx.Err, "warning: semantic analysis skipped because environment variable %s is not set\n", cfg.Assets.APIKeyEnvironment)
 		} else {
-			deps.SemanticAnalyzer = assetopenai.Client{APIKey: apiKey, Model: cfg.Assets.SemanticModel}
+			provider := assetopenai.Client{
+				APIKey:      apiKey,
+				Model:       cfg.Assets.SemanticModel,
+				ImageDetail: cfg.Assets.SemanticImageDetail,
+				MaxAttempts: cfg.Assets.SemanticMaxAttempts,
+				Timeout:     time.Duration(cfg.Assets.SemanticTimeoutSeconds) * time.Second,
+			}
+			deps.SemanticAnalyzer = provider
+			if cfg.Assets.SemanticCache {
+				cache, err := analyzeassets.LoadSemanticCache(analyzeassets.DefaultSemanticCachePath(*indexPath))
+				if err != nil {
+					fmt.Fprintf(ctx.Err, "warning: semantic cache unavailable: %v\n", err)
+				} else {
+					deps.SemanticAnalyzer = analyzeassets.CachedSemanticAnalyzer{Analyzer: provider, Cache: cache, Scope: provider.CacheScope()}
+				}
+			}
 		}
 	}
 	session.Start("Preparing asset analysis")
@@ -286,12 +342,7 @@ func runIngest(args []string, ctx app.App) error {
 		return err
 	}
 	ui := newPresenter(ctx.Out, ctx.Err, cfg)
-	session := loading.New(ctx.Out, loading.Settings{
-		Enabled:    cfg.UI.Loading.Enabled,
-		Style:      cfg.UI.Loading.Style,
-		IntervalMS: cfg.UI.Loading.IntervalMS,
-		TTY:        os.Stdout,
-	})
+	session := newLoadingSession(ctx, cfg)
 
 	session.Start("Loading config")
 	index, err := ingest.BuildIndexWithProgress(*manifestPath, func(current, total int, message string) {
@@ -349,7 +400,7 @@ func runAlign(args []string, ctx app.App) error {
 		return fmt.Errorf("alignment requires an API key in environment variable %s", cfg.Alignment.APIKeyEnvironment)
 	}
 	ui := newPresenter(ctx.Out, ctx.Err, cfg)
-	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	session := newLoadingSession(ctx, cfg)
 	session.Start("Preparing alignment")
 	result, err := alignment.Build(context.Background(), alignment.Options{
 		IndexPath: *indexPath, FFprobe: *ffprobePath, MinSimilarity: cfg.Alignment.MinSimilarity,
@@ -455,7 +506,7 @@ func runPlan(args []string, ctx app.App) error {
 	if err != nil {
 		return err
 	}
-	session := loading.New(ctx.Out, loading.Settings{Enabled: cfg.UI.Loading.Enabled, Style: cfg.UI.Loading.Style, IntervalMS: cfg.UI.Loading.IntervalMS, TTY: os.Stdout})
+	session := newLoadingSession(ctx, cfg)
 	session.Start("Preparing edit plan")
 	result, err := plan.Build(context.Background(), plan.Options{AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect}, func(current, total int, message string) {
 		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))

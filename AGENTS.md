@@ -32,6 +32,10 @@ The project currently has:
 - `internal/project`: user-editable project manifest model.
 - `internal/config`: user-editable CLI/application config model.
 - `internal/ingest`: deterministic input validation and index generation.
+- `internal/audio`: deterministic voiceover inspection through `ffprobe`.
+- `internal/asr`: provider-neutral transcript model and transcription interface.
+- `internal/asr/openai`: OpenAI word-timestamp transcription adapter.
+- `internal/alignment`: script/transcript comparison and timed alignment artifact generation.
 - `internal/ui/loading`: reusable terminal loading animation wrapper.
 
 Main user-facing files:
@@ -39,6 +43,7 @@ Main user-facing files:
 - `auto-editor.json`: user-editable project manifest, created by `init`.
 - `auto-editor.config.json`: user-editable config, created by `init`.
 - `.auto-editor/index.json`: generated ingest index, created by `ingest`.
+- `.auto-editor/alignment.json`: generated transcript, timing, comparison metrics, and aligned script segments, created by `align`.
 
 Generated files under `.auto-editor/` should not be committed.
 
@@ -56,6 +61,7 @@ Common smoke commands:
 ```powershell
 go run ./cmd/auto-editor init --name launch-video --script script.txt --voiceover voiceover.wav --asset assets --reference shorts=refs/shorts
 go run ./cmd/auto-editor ingest --manifest auto-editor.json --config auto-editor.config.json
+go run ./cmd/auto-editor align --index .auto-editor/index.json --config auto-editor.config.json
 ```
 
 Always run:
@@ -108,6 +114,12 @@ Current shape:
       "style": "ascii",
       "interval_ms": 80
     }
+  },
+  "alignment": {
+    "provider": "openai",
+    "model": "whisper-1",
+    "api_key_environment": "OPENAI_API_KEY",
+    "min_similarity": 0.7
   }
 }
 ```
@@ -119,6 +131,7 @@ Rules:
 - Add defaults in `internal/config`.
 - Do not silently ignore invalid config.
 - Prefer stable field names because users may edit this file directly.
+- `alignment.model` is currently restricted to `whisper-1`, because this first alignment implementation requires word-level timestamps.
 
 ## Manifest Philosophy
 
@@ -181,18 +194,47 @@ It should produce:
 - stable-ish IDs
 - warnings for skipped files inside directories
 
-It should not try to decide whether the voiceover matches the script. That belongs to a future `align` stage using ASR and confidence scores.
+It should not try to decide whether the voiceover matches the script. That belongs to `align`.
+
+## Alignment Philosophy
+
+`align` consumes `.auto-editor/index.json`, not the manifest directly. It verifies the indexed SHA-256 hashes for the script and voiceover before doing work, so a changed input must be ingested again.
+
+The current implementation performs six visible stages:
+
+1. Load the ingest index.
+2. Verify the indexed script and voiceover are unchanged.
+3. Probe the voiceover with `ffprobe` and require one valid audio stream, duration, sample rate, and channel count.
+4. Transcribe through the configured provider, currently OpenAI, requesting `verbose_json` plus word and segment timestamps.
+5. Normalize words deterministically (Unicode letters/numbers, case-insensitive, punctuation ignored) and perform exact dynamic-programming sequence alignment.
+6. Write `.auto-editor/alignment.json` with source IDs/hashes, media facts, raw transcript data, timing segments, and comparison metrics.
+
+The artifact contains matched word count, substitutions, missing script words, extra spoken words, similarity, and words per minute. It warns when the similarity is below `alignment.min_similarity`, when words are missing/extra/substituted, or when the final transcript timestamp exceeds the probed duration by more than one second.
+
+Runtime requirements:
+
+- `ffprobe` must be available on `PATH`, or passed as `auto-editor align --ffprobe <path>`.
+- The environment variable named by `alignment.api_key_environment` must hold an OpenAI API key.
+- The index is version 2 because it now preserves the project language for transcription. Run `ingest` again before `align` when using an older index.
+
+Known limits and deliberate edge-case behavior:
+
+- Alignment is exact after normalization. It does not yet treat number forms, abbreviations, pronunciation variants, or near-miss spellings as equivalent.
+- Non-Latin text tokenizes, but language-specific segmentation quality will vary; a future tokenizer should be selected from the manifest language.
+- The first provider assumes API word timestamps are monotonic and rejects missing, overlapping, or zero-length timings instead of manufacturing them.
+- There is no audio chunking yet. Very long source files may exceed provider upload/runtime limits and should be split upstream.
+- Exact alignment intentionally caps the dynamic-programming matrix at four million cells; larger scripts/transcripts fail with an instruction to split the voiceover rather than risk excessive memory use.
+- This layer does not yet measure silence, clipping, loudness, multiple speakers, or ASR confidence. Those need a later audio-quality/VAD pass and, where appropriate, diarization.
 
 ## Planned Next Layers
 
 Recommended order:
 
-1. `align`: run ASR on the voiceover, compare it to the script, and emit timed script/audio segments with confidence scores.
-2. `analyze-assets`: extract deterministic and model-assisted metadata from assets.
-3. `analyze-style`: inspect reference videos and produce a structured style profile.
-4. `plan`: produce a constrained timeline JSON using IDs from the ingest/analysis outputs.
-5. `render`: render from the constrained timeline.
-6. `review`: score the render and suggest patchable timeline changes.
+1. `analyze-assets`: extract deterministic and model-assisted metadata from assets.
+2. `analyze-style`: inspect reference videos and produce a structured style profile.
+3. `plan`: produce a constrained timeline JSON using IDs from the ingest/analysis outputs.
+4. `render`: render from the constrained timeline.
+5. `review`: score the render and suggest patchable timeline changes.
 
 Keep each generated artifact versioned and schema-shaped.
 
@@ -246,4 +288,3 @@ When the user asks to implement:
 - keep the code consistent with the current app
 - test it
 - summarize what changed without drowning them in detail
-

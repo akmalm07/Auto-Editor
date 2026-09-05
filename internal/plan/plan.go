@@ -4,6 +4,7 @@ import (
 	"auto-editor/internal/alignment"
 	"auto-editor/internal/analyzeassets"
 	"auto-editor/internal/analyzestyle"
+	"auto-editor/internal/artifact"
 	"auto-editor/internal/ingest"
 	"context"
 	"encoding/json"
@@ -14,7 +15,7 @@ import (
 )
 
 const DefaultPlanPath = ".auto-editor/plan.json"
-const Version = 1
+const Version = 2
 
 type Result struct {
 	Version     int                 `json:"version"`
@@ -23,6 +24,7 @@ type Result struct {
 	Format      Format              `json:"format"`
 	Sources     Sources             `json:"sources"`
 	Voiceover   Voiceover           `json:"voiceover"`
+	Selection   AssetSelection      `json:"asset_selection"`
 	Visuals     []Visual            `json:"visuals"`
 	Captions    []Caption           `json:"captions"`
 	Warnings    []ingest.Diagnostic `json:"warnings,omitempty"`
@@ -76,11 +78,11 @@ func Build(ctx context.Context, options Options, report StageReporter) (Result, 
 		}
 		return filepath.Join(projectRoot, path)
 	}
-	alignmentResult, err := read[alignment.Result](resolve(options.AlignmentPath))
+	alignmentResult, err := artifact.Read[alignment.Result](resolve(options.AlignmentPath))
 	if err != nil {
 		return Result{}, fmt.Errorf("read alignment artifact: %w", err)
 	}
-	assetsResult, err := read[analyzeassets.Result](resolve(options.AssetsPath))
+	assetsResult, err := artifact.Read[analyzeassets.Result](resolve(options.AssetsPath))
 	if err != nil {
 		return Result{}, fmt.Errorf("read asset artifact: %w", err)
 	}
@@ -113,6 +115,7 @@ func Build(ctx context.Context, options Options, report StageReporter) (Result, 
 	} else {
 		result.Warnings = append(result.Warnings, ingest.Diagnostic{Level: "warning", Field: "style", Message: "style artifact not found; using deterministic asset selection"})
 	}
+	visuals, result.Selection = rankVisualAssets(visuals, style, styleErr == nil)
 	for index, segment := range alignmentResult.Segments {
 		if report != nil {
 			report(index+1, len(alignmentResult.Segments), fmt.Sprintf("Planning segment %d/%d: %s", index+1, len(alignmentResult.Segments), segment.Text))
@@ -137,23 +140,5 @@ func Build(ctx context.Context, options Options, report StageReporter) (Result, 
 }
 
 func Write(path string, result Result) error {
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-func read[T any](path string) (T, error) {
-	var value T
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return value, err
-	}
-	if err := json.Unmarshal(data, &value); err != nil {
-		return value, err
-	}
-	return value, nil
+	return artifact.Write(path, result)
 }
