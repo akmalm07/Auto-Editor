@@ -40,7 +40,7 @@ func TestClientAnalyzesImageWithResponsesAPI(t *testing.T) {
 	if err := os.WriteFile(path, []byte("image"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := (Client{APIKey: "test-key", Model: "test-model", BaseURL: server.URL, HTTP: server.Client()}).Analyze(context.Background(), []string{path})
+	result, err := (Client{APIKey: "test-key", Model: "test-model", ImageDetail: "auto", BaseURL: server.URL, HTTP: server.Client()}).Analyze(context.Background(), []string{path})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,10 +30,10 @@ func TestReadMissingConfigReturnsDefault(t *testing.T) {
 	if cfg.Alignment.Provider != "openai" || cfg.Alignment.Model != "whisper-1" || cfg.Alignment.MinSimilarity != 0.70 {
 		t.Fatalf("unexpected alignment defaults: %#v", cfg.Alignment)
 	}
-	if cfg.Assets.FFprobe != "ffprobe" || cfg.Assets.FFmpeg != "ffmpeg" || cfg.Assets.SemanticProvider != "none" || !cfg.Assets.SemanticCache || cfg.Assets.SemanticImageDetail != "auto" || cfg.Assets.SemanticMaxAttempts != 3 || cfg.Assets.SemanticTimeoutSeconds != 60 {
+	if cfg.Assets.FFprobe != "ffprobe" || cfg.Assets.FFmpeg != "ffmpeg" || cfg.Assets.SemanticProvider != "openai" || !cfg.Assets.SemanticCache || cfg.Assets.SemanticImageDetail != "auto" || cfg.Assets.SemanticMaxAttempts != 3 || cfg.Assets.SemanticTimeoutSeconds != 60 {
 		t.Fatalf("unexpected asset defaults: %#v", cfg.Assets)
 	}
-	if cfg.Style.SemanticProvider != "none" || !cfg.Style.SemanticCache || cfg.Style.SemanticMaxFrames != 12 {
+	if cfg.Style.SemanticProvider != "openai" || !cfg.Style.SemanticCache || cfg.Style.SemanticImageDetail != "auto" || cfg.Style.SemanticMaxFrames != 12 {
 		t.Fatalf("unexpected style defaults: %#v", cfg.Style)
 	}
 }

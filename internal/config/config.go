@@ -79,7 +79,7 @@ func Default() Config {
 		Assets: AssetsConfig{
 			FFprobe:                "ffprobe",
 			FFmpeg:                 "ffmpeg",
-			SemanticProvider:       "none",
+			SemanticProvider:       "openai",
 			SemanticModel:          "gpt-4.1-mini",
 			APIKeyEnvironment:      "OPENAI_API_KEY",
 			SemanticCache:          true,
@@ -88,7 +88,7 @@ func Default() Config {
 			SemanticTimeoutSeconds: 60,
 		},
 		Style: StyleConfig{
-			SemanticProvider:       "none",
+			SemanticProvider:       "openai",
 			SemanticModel:          "gpt-4.1-mini",
 			APIKeyEnvironment:      "OPENAI_API_KEY",
 			SemanticCache:          true,

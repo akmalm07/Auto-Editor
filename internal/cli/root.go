@@ -40,11 +40,30 @@ func (f *stringListFlag) Set(value string) error {
 }
 
 func Run(args []string, ctx app.App) error {
+	projectRoot, args, err := splitProjectFlag(args)
+	if err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		printRootUsage(ctx)
 		return nil
 	}
+	if projectRoot == "" && commandUsesProject(args[0]) {
+		root, found, err := findProjectRoot(".")
+		if err != nil {
+			return err
+		}
+		if found {
+			projectRoot = root
+		}
+	}
+	if projectRoot != "" {
+		return inProjectDirectory(projectRoot, func() error { return runCommand(args, ctx) })
+	}
+	return runCommand(args, ctx)
+}
 
+func runCommand(args []string, ctx app.App) error {
 	switch args[0] {
 	case "help", "-h", "--help":
 		printRootUsage(ctx)
@@ -64,6 +83,10 @@ func Run(args []string, ctx app.App) error {
 		return runAnalyzeStyle(args[1:], ctx)
 	case "plan":
 		return runPlan(args[1:], ctx)
+	case "run":
+		return runPipeline(args[1:], ctx)
+	case "status":
+		return runStatus(args[1:], ctx)
 	case "render":
 		return runPlaceholder("render", ctx)
 	case "review":
@@ -89,6 +112,7 @@ func runAnalyzeStyle(args []string, ctx app.App) error {
 	indexPath := fs.String("index", ingest.DefaultIndexPath, "ingest index path")
 	configPath := fs.String("config", config.DefaultConfigName, "config file path")
 	outputPath := fs.String("out", analyzestyle.DefaultStylePath, "style analysis output path")
+	noSemantic := fs.Bool("no-semantic", false, "disable semantic style analysis for this run")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -101,7 +125,7 @@ func runAnalyzeStyle(args []string, ctx app.App) error {
 	}
 	ui := newPresenter(ctx.Out, ctx.Err, cfg)
 	deps := analyzestyle.Dependencies{}
-	semanticEnabled := cfg.Style.SemanticProvider == "openai"
+	semanticEnabled := !*noSemantic && cfg.Style.SemanticProvider == "openai"
 	if semanticEnabled {
 		apiKey, ok := os.LookupEnv(cfg.Style.APIKeyEnvironment)
 		if !ok || strings.TrimSpace(apiKey) == "" {
@@ -150,7 +174,7 @@ func runAnalyzeStyle(args []string, ctx app.App) error {
 	}
 	if semanticComplete > 0 {
 		ui.Success(fmt.Sprintf("completed semantic style analysis for %d reference set(s)", semanticComplete))
-	} else if cfg.Style.SemanticProvider == "openai" {
+	} else if !*noSemantic && cfg.Style.SemanticProvider == "openai" {
 		fmt.Fprintln(ctx.Err, "warning: semantic style analysis did not complete; see diagnostics")
 	}
 	ui.Success(fmt.Sprintf("created %s", filepath.Clean(resolvedOutputPath)))
@@ -163,6 +187,7 @@ func runAnalyzeAssets(args []string, ctx app.App) error {
 	indexPath := fs.String("index", ingest.DefaultIndexPath, "ingest index path")
 	configPath := fs.String("config", config.DefaultConfigName, "config file path")
 	outputPath := fs.String("out", analyzeassets.DefaultAssetsPath, "asset analysis output path")
+	noSemantic := fs.Bool("no-semantic", false, "disable semantic asset analysis for this run")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -176,7 +201,7 @@ func runAnalyzeAssets(args []string, ctx app.App) error {
 	ui := newPresenter(ctx.Out, ctx.Err, cfg)
 	session := newLoadingSession(ctx, cfg)
 	deps := analyzeassets.Dependencies{}
-	semanticEnabled := cfg.Assets.SemanticProvider == "openai"
+	semanticEnabled := !*noSemantic && cfg.Assets.SemanticProvider == "openai"
 	if semanticEnabled {
 		apiKey, ok := os.LookupEnv(cfg.Assets.APIKeyEnvironment)
 		if !ok || strings.TrimSpace(apiKey) == "" {
@@ -233,6 +258,8 @@ func runAnalyzeAssets(args []string, ctx app.App) error {
 	ui.Success(fmt.Sprintf("analyzed %d asset(s) deterministically", len(result.Assets)))
 	if semanticComplete == visualAssets {
 		ui.Success(fmt.Sprintf("completed semantic analysis for %d visual asset(s)", semanticComplete))
+	} else if *noSemantic {
+		ui.Success("skipped semantic asset analysis (--no-semantic)")
 	} else {
 		fmt.Fprintf(ctx.Err, "warning: semantic analysis completed for %d of %d visual asset(s); see diagnostics\n", semanticComplete, visualAssets)
 	}
@@ -497,12 +524,13 @@ func runPlan(args []string, ctx app.App) error {
 	indexPath := fs.String("index", ingest.DefaultIndexPath, "ingest index path")
 	assetsPath := fs.String("assets", analyzeassets.DefaultAssetsPath, "asset analysis path")
 	stylePath := fs.String("style", analyzestyle.DefaultStylePath, "style analysis path")
+	configPath := fs.String("config", config.DefaultConfigName, "config file path")
 	outputPath := fs.String("out", plan.DefaultPlanPath, "plan output path")
 	aspect := fs.String("aspect", "16:9", "output aspect ratio")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := config.Read(config.DefaultConfigName)
+	cfg, err := config.Read(*configPath)
 	if err != nil {
 		return err
 	}
@@ -515,9 +543,10 @@ func runPlan(args []string, ctx app.App) error {
 		session.Stop("")
 		return err
 	}
-	out := filepath.Join(filepath.Dir(*indexPath), *outputPath)
-	if filepath.IsAbs(*outputPath) {
-		out = *outputPath
+	out, err := resolveAlignmentOutputPath(*indexPath, *outputPath)
+	if err != nil {
+		session.Stop("")
+		return err
 	}
 	if err := plan.Write(out, result); err != nil {
 		session.Stop("")
@@ -538,7 +567,7 @@ func printRootUsage(ctx app.App) {
 	fmt.Fprintf(ctx.Out, `%s
 
 Usage:
-  auto-editor <command> [flags]
+  auto-editor [--project <directory>] <command> [flags]
 
 Commands:
   init     create a project manifest
@@ -547,6 +576,8 @@ Commands:
   analyze-assets  inspect assets and optionally analyze their visual content
   analyze-style   measure reference-video style facts
   plan     draft an edit timeline
+  run      run the pipeline through a selected stage
+  status   show project artifacts and the next command
   render   render the current timeline
   review   score and revise a render
   version  print the CLI version
@@ -557,10 +588,31 @@ Flags:
 Init example:
   auto-editor init --name launch-video --script script.txt --voiceover voiceover.wav --asset assets --reference shorts=refs/shorts --reference documentary=refs/docs
 
+Project commands infer the nearest auto-editor.json. Run them from a project folder,
+or pass --project C:\path\to\project before the command.
+
 Ingest example:
-  auto-editor ingest --manifest auto-editor.json --config auto-editor.config.json
+  auto-editor ingest
 
 Align example:
-  auto-editor align --index .auto-editor/index.json --config auto-editor.config.json
+  auto-editor align
+
+Analyze-assets example:
+  auto-editor analyze-assets
+
+Add --no-semantic to skip semantic asset analysis for one run.
+
+Analyze-style example (requires reference videos in the manifest):
+  auto-editor analyze-style
+
+Add --no-semantic to skip semantic style analysis for one run.
+
+Plan example:
+  auto-editor plan
+
+Pipeline example:
+  auto-editor run --through plan
+
+Use --no-semantic with analyze-assets, analyze-style, or run to skip AI analysis.
 `, ctx.Name)
 }
