@@ -77,28 +77,43 @@ func (c Client) AnalyzeJSON(ctx context.Context, input VisionRequest, target any
 	if strings.TrimSpace(c.Model) == "" {
 		return fmt.Errorf("OpenAI semantic model is missing")
 	}
-	if len(input.Paths) == 0 {
-		return fmt.Errorf("semantic analysis requires an image")
-	}
-	content := []map[string]string{{"type": "input_text", "text": input.Prompt}}
+	imageURLs := make([]string, 0, len(input.Paths))
 	for _, path := range input.Paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		content = append(content, map[string]string{"type": "input_image", "image_url": "data:" + mediaType(path) + ";base64," + base64.StdEncoding.EncodeToString(data), "detail": c.imageDetail()})
+		imageURLs = append(imageURLs, "data:"+mediaType(path)+";base64,"+base64.StdEncoding.EncodeToString(data))
+	}
+	detail := c.imageDetail()
+	statusCode, status, responseBody, err := c.requestJSON(ctx, input, imageURLs, detail)
+	if err != nil {
+		return err
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		return fmt.Errorf("OpenAI semantic analysis failed (%s): %s", status, providerError(responseBody))
+	}
+	return decodeResponse(responseBody, target)
+}
+
+// requestJSON makes one bounded Responses API request at the requested
+// image-detail level.
+func (c Client) requestJSON(ctx context.Context, input VisionRequest, imageURLs []string, detail string) (int, string, []byte, error) {
+	content := []map[string]string{{"type": "input_text", "text": input.Prompt}}
+	for _, imageURL := range imageURLs {
+		content = append(content, map[string]string{"type": "input_image", "image_url": imageURL, "detail": detail})
 	}
 	body, err := json.Marshal(map[string]any{
 		"model": c.Model,
 		"store": false,
 		"input": []map[string]any{{"role": "user", "content": content}},
 		"text": map[string]any{
-			"verbosity": "low",
+			"verbosity": "medium",
 			"format":    map[string]any{"type": "json_schema", "name": input.SchemaName, "strict": true, "schema": input.Schema},
 		},
 	})
 	if err != nil {
-		return err
+		return 0, "", nil, err
 	}
 	baseURL := strings.TrimRight(c.BaseURL, "/")
 	if baseURL == "" {
@@ -106,22 +121,23 @@ func (c Client) AnalyzeJSON(ctx context.Context, input VisionRequest, target any
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/responses", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return 0, "", nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	response, err := ai.Do(ctx, c.httpClient(), req, ai.RetryOptions{MaxAttempts: c.MaxAttempts})
 	if err != nil {
-		return err
+		return 0, "", nil, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return err
+		return 0, "", nil, err
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("OpenAI semantic analysis failed (%s): %s", response.Status, providerError(responseBody))
-	}
+	return response.StatusCode, response.Status, responseBody, nil
+}
+
+func decodeResponse(responseBody []byte, target any) error {
 	var raw struct {
 		OutputText string `json:"output_text"`
 		Output     []struct {
@@ -167,7 +183,7 @@ func (c Client) httpClient() *http.Client {
 }
 
 func (c Client) imageDetail() string {
-	if c.ImageDetail == "low" || c.ImageDetail == "high" || c.ImageDetail == "auto" {
+	if c.ImageDetail == "low" || c.ImageDetail == "medium" || c.ImageDetail == "high" || c.ImageDetail == "auto" || c.ImageDetail == "original" {
 		return c.ImageDetail
 	}
 	return "auto"

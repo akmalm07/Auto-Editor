@@ -31,7 +31,7 @@ For repeatable Windows integration checks, use the bundled PowerShell runner. It
 & C:\Users\dev\tools\auto-editor\scripts\integration-test.ps1 -Project C:\Users\dev\tools\test\auto-test\test-1
 ```
 
-Pass `-NoSemantic` to avoid external semantic requests, `-Through align` to stop early, or `-SkipBuild` when a trusted executable has already been built.
+The script always builds the CLI and runs the complete pipeline through rendering.
 
 Future work should add adapters for additional vision-capable providers, such as Claude, Gemini, and local models. Every adapter should return the same structured asset analysis—summary, subjects, actions, settings, mood, and visible text—so planning and rendering stay independent of the chosen model provider.
 
@@ -61,7 +61,7 @@ The user-editable settings below trade cost against fidelity. `auto` is the defa
 {
   "assets": {
     "semantic_provider": "openai",
-    "semantic_model": "gpt-4.1-mini",
+    "semantic_model": "gpt-4o-mini",
     "api_key_environment": "OPENAI_API_KEY",
     "semantic_cache": true,
     "semantic_image_detail": "auto",
@@ -83,7 +83,7 @@ The default cap of 12 frames balances set-level coverage against cost; the cap i
 {
   "style": {
     "semantic_provider": "openai",
-    "semantic_model": "gpt-4.1-mini",
+    "semantic_model": "gpt-4o-mini",
     "api_key_environment": "OPENAI_API_KEY",
     "semantic_cache": true,
     "semantic_image_detail": "auto",
@@ -98,9 +98,11 @@ If the key, provider, or semantic pass is unavailable, deterministic style analy
 
 ## Planning
 
-`plan` combines `alignment.json` and `assets.json` into `.auto-editor/plan.json`. It creates one timed visual and caption for each aligned narration segment, preserves source asset IDs and timing constraints, and cycles through every eligible visual asset.
+`plan` combines `alignment.json` and `assets.json` into `.auto-editor/plan.json`. By default, a bounded semantic planning pass turns the word-timed narration into two to six coherent visual beats and selects an existing asset ID for each beat. It uses narration topic/scene/action/emotion changes, asset literal and editorial metadata, and optional reference-style preferences. The output is constrained and verified: every transcript word must be covered exactly once, and no asset ID can be invented. If the provider is unavailable or returns an invalid timeline, planning records a warning and falls back to the deterministic one-visual-per-alignment-segment behavior.
 
-When `style.json` contains completed semantic `planning_preferences`, the planner applies them only as soft ranking inputs. It deterministically compares meaningful preference terms with completed literal/editorial asset metadata, weights matches by the reference set's semantic confidence, and uses original asset order to break ties. Preferences never remove an asset, invent an ID, alter narration timing, or override source-duration limits. The version 2 plan artifact records the policy, exact preferences, per-asset scores, matched terms, and original order under `asset_selection`; `style_status` explains whether preferences were applied, unavailable, absent, or unmatched.
+Use `auto-editor plan --no-semantic` to force that deterministic fallback for one run. `auto-editor run --no-semantic` also disables semantic planning.
+
+When `style.json` contains completed semantic `planning_preferences`, the planner applies them only as soft ranking inputs. It deterministically compares meaningful preference terms with completed literal/editorial asset metadata, weights matches by the reference set's semantic confidence, and uses original asset order to break ties. Preferences never remove an asset, invent an ID, alter narration timing, or override source-duration limits. The version 4 plan artifact records source hashes, semantic beat choices and rationales, and an explicit `hold_last_frame` policy when a short video must fill a longer planned slot.
 
 Explicit-path command variants remain available when artifacts live outside the standard project location:
 
@@ -111,3 +113,15 @@ auto-editor plan --index .auto-editor/index.json --assets .auto-editor/assets.js
 ```
 
 `analyze-style` requires at least one reference-video set. `auto-editor run --through plan` skips style analysis when no references exist; the planner then uses deterministic asset order.
+
+## Rendering
+
+`render` turns the current version-3 plan into a deterministic H.264/AAC MP4. It verifies the voiceover and each selected asset against the hashes recorded in the plan before invoking FFmpeg, so changed media requires the relevant upstream stages to run again. Images are held for their planned duration; a video that is shorter than its planned slot freezes on its final frame. The initial renderer uses hard cuts, `cover` scale/crop, the voiceover as its sole audio track, and optional burned-in ASS captions.
+
+```powershell
+auto-editor render --out output/render.mp4
+auto-editor render --no-captions
+auto-editor run --through render
+```
+
+Rendering refuses to replace an existing final file unless `--force` is supplied. It writes `.auto-editor/render-report.json` with the plan hash, verified source hashes, effective settings, output media facts, and any final-frame hold warnings. FFmpeg and ffprobe must be available on `PATH`, or configured under `render` in `auto-editor.config.json`.

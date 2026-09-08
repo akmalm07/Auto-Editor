@@ -59,8 +59,8 @@ func TestParsePipelineStage(t *testing.T) {
 	if err != nil || stage != stageAnalyzeAssets {
 		t.Fatalf("parsePipelineStage() = %v, %v", stage, err)
 	}
-	if _, err := parsePipelineStage("render"); err == nil {
-		t.Fatal("expected invalid stage error")
+	if stage, err := parsePipelineStage("render"); err != nil || stage != stageRender {
+		t.Fatalf("parsePipelineStage(render) = %v, %v", stage, err)
 	}
 }
 

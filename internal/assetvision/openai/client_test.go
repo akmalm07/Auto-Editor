@@ -24,7 +24,7 @@ func TestClientAnalyzesImageWithResponsesAPI(t *testing.T) {
 		}
 		text := request["text"].(map[string]any)
 		format := text["format"].(map[string]any)
-		if text["verbosity"] != "low" || format["type"] != "json_schema" || format["strict"] != true {
+		if text["verbosity"] != "medium" || format["type"] != "json_schema" || format["strict"] != true {
 			t.Fatalf("unexpected output format: %#v", text)
 		}
 		input := request["input"].([]any)[0].(map[string]any)

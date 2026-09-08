@@ -19,7 +19,9 @@ import (
 	"auto-editor/internal/config"
 	"auto-editor/internal/ingest"
 	"auto-editor/internal/plan"
+	planopenai "auto-editor/internal/planopenai"
 	"auto-editor/internal/project"
+	"auto-editor/internal/render"
 	"auto-editor/internal/ui/loading"
 )
 
@@ -88,7 +90,7 @@ func runCommand(args []string, ctx app.App) error {
 	case "status":
 		return runStatus(args[1:], ctx)
 	case "render":
-		return runPlaceholder("render", ctx)
+		return runRender(args[1:], ctx)
 	case "review":
 		return runPlaceholder("review", ctx)
 	default:
@@ -527,6 +529,7 @@ func runPlan(args []string, ctx app.App) error {
 	configPath := fs.String("config", config.DefaultConfigName, "config file path")
 	outputPath := fs.String("out", plan.DefaultPlanPath, "plan output path")
 	aspect := fs.String("aspect", "16:9", "output aspect ratio")
+	noSemantic := fs.Bool("no-semantic", false, "disable semantic visual beat planning for this run")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -535,8 +538,19 @@ func runPlan(args []string, ctx app.App) error {
 		return err
 	}
 	session := newLoadingSession(ctx, cfg)
+	deps := plan.Dependencies{}
+	semanticEnabled := !*noSemantic && cfg.Planning.SemanticProvider == "openai"
+	if semanticEnabled {
+		apiKey, ok := os.LookupEnv(cfg.Planning.APIKeyEnvironment)
+		if !ok || strings.TrimSpace(apiKey) == "" {
+			semanticEnabled = false
+			fmt.Fprintf(ctx.Err, "warning: semantic planning skipped because environment variable %s is not set\n", cfg.Planning.APIKeyEnvironment)
+		} else {
+			deps.SemanticPlanner = planopenai.Client{Client: assetopenai.Client{APIKey: apiKey, Model: cfg.Planning.SemanticModel, MaxAttempts: cfg.Planning.SemanticMaxAttempts, Timeout: time.Duration(cfg.Planning.SemanticTimeoutSeconds) * time.Second}}
+		}
+	}
 	session.Start("Preparing edit plan")
-	result, err := plan.Build(context.Background(), plan.Options{AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect}, func(current, total int, message string) {
+	result, err := plan.BuildWithDependencies(context.Background(), plan.Options{AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect, SemanticEnabled: semanticEnabled}, deps, func(current, total int, message string) {
 		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
 	})
 	if err != nil {
@@ -555,6 +569,62 @@ func runPlan(args []string, ctx app.App) error {
 	session.Stop("")
 	newPresenter(ctx.Out, ctx.Err, cfg).Diagnostics(result.Warnings)
 	fmt.Fprintf(ctx.Out, "ok: created %s\n", filepath.Clean(out))
+	return nil
+}
+
+func runRender(args []string, ctx app.App) error {
+	fs := flag.NewFlagSet("render", flag.ContinueOnError)
+	fs.SetOutput(ctx.Err)
+	planPath := fs.String("plan", plan.DefaultPlanPath, "edit plan path")
+	configPath := fs.String("config", config.DefaultConfigName, "config file path")
+	outputPath := fs.String("out", "output/render.mp4", "final MP4 output path")
+	reportPath := fs.String("report", render.DefaultReportPath, "render report output path")
+	noCaptions := fs.Bool("no-captions", false, "do not burn captions into this render")
+	force := fs.Bool("force", false, "replace an existing output file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("render does not accept positional arguments")
+	}
+	if *planPath == "" || *configPath == "" || *outputPath == "" || *reportPath == "" {
+		return fmt.Errorf("plan, config, output, and report paths cannot be empty")
+	}
+	cfg, err := config.Read(*configPath)
+	if err != nil {
+		return err
+	}
+	settings := cfg.Render
+	if *noCaptions {
+		settings.Captions.Enabled = false
+	}
+	planAbsolute, err := filepath.Abs(*planPath)
+	if err != nil {
+		return err
+	}
+	root := filepath.Dir(planAbsolute)
+	if filepath.Base(root) == ".auto-editor" {
+		root = filepath.Dir(root)
+	}
+	resolve := func(path string) string {
+		if filepath.IsAbs(path) {
+			return filepath.Clean(path)
+		}
+		return filepath.Join(root, path)
+	}
+	ui := newPresenter(ctx.Out, ctx.Err, cfg)
+	session := newLoadingSession(ctx, cfg)
+	session.Start("Preparing render")
+	result, err := render.Build(context.Background(), render.Options{PlanPath: planAbsolute, OutputPath: resolve(*outputPath), ReportPath: resolve(*reportPath), Force: *force, FFprobe: settings.FFprobe, Settings: settings}, render.Dependencies{}, func(current, total int, message string) {
+		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
+	})
+	if err != nil {
+		session.Stop("")
+		return err
+	}
+	session.Stop("")
+	ui.Success(fmt.Sprintf("rendered %s", filepath.Clean(result.OutputPath)))
+	ui.Success(fmt.Sprintf("created %s", filepath.Clean(resolve(*reportPath))))
 	return nil
 }
 
@@ -612,6 +682,9 @@ Plan example:
 
 Pipeline example:
   auto-editor run --through plan
+
+Render example:
+  auto-editor render --out output/render.mp4
 
 Use --no-semantic with analyze-assets, analyze-style, or run to skip AI analysis.
 `, ctx.Name)

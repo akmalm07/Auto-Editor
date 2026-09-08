@@ -13,6 +13,7 @@ import (
 	"auto-editor/internal/ingest"
 	"auto-editor/internal/plan"
 	"auto-editor/internal/project"
+	"auto-editor/internal/render"
 )
 
 type pipelineStage int
@@ -23,6 +24,7 @@ const (
 	stageAnalyzeAssets
 	stageAnalyzeStyle
 	stagePlan
+	stageRender
 )
 
 func parsePipelineStage(value string) (pipelineStage, error) {
@@ -37,15 +39,17 @@ func parsePipelineStage(value string) (pipelineStage, error) {
 		return stageAnalyzeStyle, nil
 	case "plan":
 		return stagePlan, nil
+	case "render":
+		return stageRender, nil
 	default:
-		return 0, fmt.Errorf("invalid --through value %q: expected ingest, align, analyze-assets, analyze-style, or plan", value)
+		return 0, fmt.Errorf("invalid --through value %q: expected ingest, align, analyze-assets, analyze-style, plan, or render", value)
 	}
 }
 
 func runPipeline(args []string, ctx app.App) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(ctx.Err)
-	through := fs.String("through", "plan", "last stage to run: ingest, align, analyze-assets, analyze-style, or plan")
+	through := fs.String("through", "plan", "last stage to run: ingest, align, analyze-assets, analyze-style, plan, or render")
 	noSemantic := fs.Bool("no-semantic", false, "disable semantic analysis for this run")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -98,7 +102,13 @@ func runPipeline(args []string, ctx app.App) error {
 	if lastStage == stageAnalyzeStyle {
 		return pipelineComplete(ctx, *through)
 	}
-	if err := runStage("plan", func() error { return runPlan(nil, ctx) }); err != nil {
+	if err := runStage("plan", func() error { return runPlan(semanticArgs, ctx) }); err != nil {
+		return err
+	}
+	if lastStage == stagePlan {
+		return pipelineComplete(ctx, *through)
+	}
+	if err := runStage("render", func() error { return runRender([]string{"--force"}, ctx) }); err != nil {
 		return err
 	}
 	return pipelineComplete(ctx, *through)
@@ -134,6 +144,7 @@ func runStatus(args []string, ctx app.App) error {
 	assetsPath := analyzeassets.DefaultAssetsPath
 	stylePath := analyzestyle.DefaultStylePath
 	planPath := plan.DefaultPlanPath
+	reportPath := render.DefaultReportPath
 
 	manifestExists := printArtifactStatus(ctx, "manifest", manifestPath)
 	printArtifactStatus(ctx, "config", configPath)
@@ -157,6 +168,7 @@ func runStatus(args []string, ctx app.App) error {
 		fmt.Fprintln(ctx.Out, "- style analysis (not needed: no reference sets configured)")
 	}
 	planExists := printArtifactStatus(ctx, "plan", planPath)
+	renderExists := printArtifactStatus(ctx, "render report", reportPath)
 
 	switch {
 	case !manifestExists:
@@ -171,8 +183,10 @@ func runStatus(args []string, ctx app.App) error {
 		fmt.Fprintln(ctx.Out, "next: auto-editor analyze-style")
 	case !planExists:
 		fmt.Fprintln(ctx.Out, "next: auto-editor plan")
+	case !renderExists:
+		fmt.Fprintln(ctx.Out, "next: auto-editor render")
 	default:
-		fmt.Fprintln(ctx.Out, "next: plan is ready; render is scaffolded but not implemented")
+		fmt.Fprintln(ctx.Out, "next: render is ready for review")
 	}
 	return nil
 }

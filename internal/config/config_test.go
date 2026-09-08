@@ -36,6 +36,22 @@ func TestReadMissingConfigReturnsDefault(t *testing.T) {
 	if cfg.Style.SemanticProvider != "openai" || !cfg.Style.SemanticCache || cfg.Style.SemanticImageDetail != "auto" || cfg.Style.SemanticMaxFrames != 12 {
 		t.Fatalf("unexpected style defaults: %#v", cfg.Style)
 	}
+	if cfg.Planning.SemanticProvider != "openai" || cfg.Planning.SemanticModel != "gpt-4o-mini" || cfg.Planning.SemanticMaxAttempts != 3 {
+		t.Fatalf("unexpected planning defaults: %#v", cfg.Planning)
+	}
+	if cfg.Render.FFmpeg != "ffmpeg" || cfg.Render.Width != 1920 || cfg.Render.Height != 1080 || cfg.Render.FPS != 30 || !cfg.Render.Captions.Enabled {
+		t.Fatalf("unexpected render defaults: %#v", cfg.Render)
+	}
+}
+
+func TestReadRejectsInvalidRenderSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultConfigName)
+	if err := os.WriteFile(path, []byte(`{"render":{"width":0}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(path); err == nil {
+		t.Fatal("expected invalid render configuration")
+	}
 }
 
 func TestReadRejectsInvalidSemanticRequestSettings(t *testing.T) {
@@ -45,6 +61,16 @@ func TestReadRejectsInvalidSemanticRequestSettings(t *testing.T) {
 	}
 	if _, err := Read(path); err == nil {
 		t.Fatal("expected invalid semantic request settings")
+	}
+}
+
+func TestReadAcceptsProviderSpecificImageDetail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultConfigName)
+	if err := os.WriteFile(path, []byte(`{"assets":{"semantic_image_detail":"medium"},"style":{"semantic_image_detail":"original"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(path); err != nil {
+		t.Fatalf("Read() error = %v", err)
 	}
 }
 

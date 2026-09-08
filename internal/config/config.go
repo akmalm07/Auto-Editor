@@ -15,6 +15,8 @@ type Config struct {
 	Alignment AlignmentConfig `json:"alignment"`
 	Assets    AssetsConfig    `json:"assets"`
 	Style     StyleConfig     `json:"style"`
+	Planning  PlanningConfig  `json:"planning"`
+	Render    RenderConfig    `json:"render"`
 }
 
 type UIConfig struct {
@@ -59,6 +61,36 @@ type StyleConfig struct {
 	SemanticTimeoutSeconds int    `json:"semantic_timeout_seconds"`
 }
 
+type RenderConfig struct {
+	FFmpeg       string        `json:"ffmpeg"`
+	FFprobe      string        `json:"ffprobe"`
+	Width        int           `json:"width"`
+	Height       int           `json:"height"`
+	FPS          int           `json:"fps"`
+	VideoCodec   string        `json:"video_codec"`
+	CRF          int           `json:"crf"`
+	Preset       string        `json:"preset"`
+	AudioCodec   string        `json:"audio_codec"`
+	AudioBitrate string        `json:"audio_bitrate"`
+	Captions     CaptionConfig `json:"captions"`
+}
+
+type CaptionConfig struct {
+	Enabled      bool   `json:"enabled"`
+	FontFamily   string `json:"font_family"`
+	FontSize     int    `json:"font_size"`
+	MarginBottom int    `json:"margin_bottom"`
+	OutlineWidth int    `json:"outline_width"`
+}
+
+type PlanningConfig struct {
+	SemanticProvider       string `json:"semantic_provider"`
+	SemanticModel          string `json:"semantic_model"`
+	APIKeyEnvironment      string `json:"api_key_environment"`
+	SemanticMaxAttempts    int    `json:"semantic_max_attempts"`
+	SemanticTimeoutSeconds int    `json:"semantic_timeout_seconds"`
+}
+
 func Default() Config {
 	return Config{
 		UI: UIConfig{
@@ -80,7 +112,7 @@ func Default() Config {
 			FFprobe:                "ffprobe",
 			FFmpeg:                 "ffmpeg",
 			SemanticProvider:       "openai",
-			SemanticModel:          "gpt-4.1-mini",
+			SemanticModel:          "gpt-4o-mini",
 			APIKeyEnvironment:      "OPENAI_API_KEY",
 			SemanticCache:          true,
 			SemanticImageDetail:    "auto",
@@ -89,13 +121,21 @@ func Default() Config {
 		},
 		Style: StyleConfig{
 			SemanticProvider:       "openai",
-			SemanticModel:          "gpt-4.1-mini",
+			SemanticModel:          "gpt-4o-mini",
 			APIKeyEnvironment:      "OPENAI_API_KEY",
 			SemanticCache:          true,
 			SemanticImageDetail:    "auto",
 			SemanticMaxFrames:      12,
 			SemanticMaxAttempts:    3,
 			SemanticTimeoutSeconds: 60,
+		},
+		Planning: PlanningConfig{
+			SemanticProvider: "openai", SemanticModel: "gpt-4o-mini", APIKeyEnvironment: "OPENAI_API_KEY", SemanticMaxAttempts: 3, SemanticTimeoutSeconds: 60,
+		},
+		Render: RenderConfig{
+			FFmpeg: "ffmpeg", FFprobe: "ffprobe", Width: 1920, Height: 1080, FPS: 30,
+			VideoCodec: "libx264", CRF: 18, Preset: "medium", AudioCodec: "aac", AudioBitrate: "192k",
+			Captions: CaptionConfig{Enabled: true, FontFamily: "Arial", FontSize: 56, MarginBottom: 140, OutlineWidth: 4},
 		},
 	}
 }
@@ -155,9 +195,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("assets.ffmpeg cannot be empty")
 	}
 	switch c.Assets.SemanticImageDetail {
-	case "", "auto", "low", "high":
+	case "", "auto", "low", "medium", "high", "original":
 	default:
-		return fmt.Errorf("invalid assets.semantic_image_detail %q: expected auto, low, or high", c.Assets.SemanticImageDetail)
+		return fmt.Errorf("invalid assets.semantic_image_detail %q: expected auto, low, medium, high, or original", c.Assets.SemanticImageDetail)
 	}
 	if c.Assets.SemanticMaxAttempts < 1 || c.Assets.SemanticMaxAttempts > 5 {
 		return fmt.Errorf("assets.semantic_max_attempts must be between 1 and 5")
@@ -185,9 +225,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid style.semantic_provider %q: expected none or openai", c.Style.SemanticProvider)
 	}
 	switch c.Style.SemanticImageDetail {
-	case "", "auto", "low", "high":
+	case "", "auto", "low", "medium", "high", "original":
 	default:
-		return fmt.Errorf("invalid style.semantic_image_detail %q: expected auto, low, or high", c.Style.SemanticImageDetail)
+		return fmt.Errorf("invalid style.semantic_image_detail %q: expected auto, low, medium, high, or original", c.Style.SemanticImageDetail)
 	}
 	if c.Style.SemanticMaxFrames < 1 || c.Style.SemanticMaxFrames > 24 {
 		return fmt.Errorf("style.semantic_max_frames must be between 1 and 24")
@@ -205,6 +245,37 @@ func (c Config) Validate() error {
 		if c.Style.APIKeyEnvironment == "" {
 			return fmt.Errorf("style.api_key_environment is required when semantic_provider is openai")
 		}
+	}
+
+	switch c.Planning.SemanticProvider {
+	case "", "none", "openai":
+	default:
+		return fmt.Errorf("invalid planning.semantic_provider %q: expected none or openai", c.Planning.SemanticProvider)
+	}
+	if c.Planning.SemanticMaxAttempts < 1 || c.Planning.SemanticMaxAttempts > 5 {
+		return fmt.Errorf("planning.semantic_max_attempts must be between 1 and 5")
+	}
+	if c.Planning.SemanticTimeoutSeconds < 1 || c.Planning.SemanticTimeoutSeconds > 300 {
+		return fmt.Errorf("planning.semantic_timeout_seconds must be between 1 and 300")
+	}
+	if c.Planning.SemanticProvider == "openai" && (c.Planning.SemanticModel == "" || c.Planning.APIKeyEnvironment == "") {
+		return fmt.Errorf("planning semantic model and API key environment are required when semantic_provider is openai")
+	}
+
+	if c.Render.FFmpeg == "" || c.Render.FFprobe == "" {
+		return fmt.Errorf("render.ffmpeg and render.ffprobe cannot be empty")
+	}
+	if c.Render.Width <= 0 || c.Render.Height <= 0 || c.Render.FPS <= 0 {
+		return fmt.Errorf("render.width, render.height, and render.fps must be positive")
+	}
+	if c.Render.VideoCodec == "" || c.Render.AudioCodec == "" || c.Render.AudioBitrate == "" {
+		return fmt.Errorf("render video and audio codec settings cannot be empty")
+	}
+	if c.Render.CRF < 0 || c.Render.CRF > 51 {
+		return fmt.Errorf("render.crf must be between 0 and 51")
+	}
+	if c.Render.Captions.Enabled && (c.Render.Captions.FontFamily == "" || c.Render.Captions.FontSize <= 0 || c.Render.Captions.MarginBottom < 0 || c.Render.Captions.OutlineWidth < 0) {
+		return fmt.Errorf("render caption settings are invalid")
 	}
 
 	return nil

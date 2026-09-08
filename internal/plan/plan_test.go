@@ -4,7 +4,9 @@ import (
 	"auto-editor/internal/alignment"
 	"auto-editor/internal/analyzeassets"
 	"auto-editor/internal/analyzestyle"
+	"auto-editor/internal/asr"
 	"auto-editor/internal/audio"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -26,8 +28,11 @@ func TestBuildCreatesDeterministicTimeline(t *testing.T) {
 	if len(result.Visuals) != 2 || result.Visuals[0].AssetID != "asset_1" || len(result.Captions) != 2 || len(result.Warnings) != 1 {
 		t.Fatalf("unexpected plan: %#v", result)
 	}
-	if result.Version != 2 || result.Selection.StyleStatus != "unavailable" || len(result.Selection.Ranking) != 1 {
+	if result.Version != 4 || result.Selection.StyleStatus != "unavailable" || len(result.Selection.Ranking) != 1 {
 		t.Fatalf("unexpected selection audit: %#v", result.Selection)
+	}
+	if result.Visuals[0].SourceFill != "hold_last_frame" {
+		t.Fatalf("unexpected render fill policy: %#v", result.Visuals[0])
 	}
 }
 
@@ -84,6 +89,26 @@ func TestBuildPreservesBaseOrderWhenStylePreferencesDoNotMatch(t *testing.T) {
 	if result.Selection.Ranking[0].StyleScore != 0 || result.Selection.Ranking[1].StyleScore != 0 {
 		t.Fatalf("unmatched preference added a score: %#v", result.Selection.Ranking)
 	}
+}
+
+func TestBuildUsesValidatedSemanticBeats(t *testing.T) {
+	root := t.TempDir()
+	alignmentPath, assetsPath := filepath.Join(root, "alignment.json"), filepath.Join(root, "assets.json")
+	writeJSON(t, alignmentPath, alignment.Result{Voiceover: alignment.Voiceover{Audio: audio.Probe{DurationMS: 3000}}, Transcript: asr.Transcript{Words: []asr.Word{{Text: "First", StartMS: 0, EndMS: 500}, {Text: "scene", StartMS: 500, EndMS: 1000}, {Text: "Second", StartMS: 1000, EndMS: 1500}, {Text: "scene", StartMS: 1500, EndMS: 2000}, {Text: "Final", StartMS: 2000, EndMS: 2500}, {Text: "scene", StartMS: 2500, EndMS: 3000}}}})
+	writeJSON(t, assetsPath, analyzeassets.Result{Assets: []analyzeassets.Asset{{AssetID: "first", Kind: "image", SHA256: "a"}, {AssetID: "second", Kind: "image", SHA256: "b"}, {AssetID: "final", Kind: "image", SHA256: "c"}}})
+	result, err := BuildWithDependencies(context.Background(), Options{AlignmentPath: alignmentPath, AssetsPath: assetsPath, StylePath: filepath.Join(root, "none.json"), AspectRatio: "16:9", SemanticEnabled: true}, Dependencies{SemanticPlanner: fakeSemanticPlanner{}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Semantic.Status != "complete" || len(result.Visuals) != 3 || result.Visuals[0].AssetID != "first" || result.Visuals[1].AssetID != "second" || result.Visuals[2].AssetID != "final" {
+		t.Fatalf("unexpected semantic plan: %#v", result)
+	}
+}
+
+type fakeSemanticPlanner struct{}
+
+func (fakeSemanticPlanner) Plan(context.Context, SemanticRequest) ([]SemanticBeat, error) {
+	return []SemanticBeat{{WordFrom: 0, WordTo: 1, AssetID: "first", Role: "opening", Rationale: "first scene"}, {WordFrom: 2, WordTo: 3, AssetID: "second", Role: "change", Rationale: "second scene"}, {WordFrom: 4, WordTo: 5, AssetID: "final", Role: "ending", Rationale: "final scene"}}, nil
 }
 
 func writeJSON(t *testing.T, path string, value any) {
