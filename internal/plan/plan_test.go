@@ -28,11 +28,21 @@ func TestBuildCreatesDeterministicTimeline(t *testing.T) {
 	if len(result.Visuals) != 2 || result.Visuals[0].AssetID != "asset_1" || len(result.Captions) != 2 || len(result.Warnings) != 1 {
 		t.Fatalf("unexpected plan: %#v", result)
 	}
-	if result.Version != 4 || result.Selection.StyleStatus != "unavailable" || len(result.Selection.Ranking) != 1 {
+	if result.Version != Version || result.Selection.StyleStatus != "unavailable" || len(result.Selection.Ranking) != 1 {
 		t.Fatalf("unexpected selection audit: %#v", result.Selection)
 	}
 	if result.Visuals[0].SourceFill != "hold_last_frame" {
 		t.Fatalf("unexpected render fill policy: %#v", result.Visuals[0])
+	}
+}
+
+func TestFillTimelineGapsUsesVisualContinuity(t *testing.T) {
+	visuals := fillTimelineGaps([]Visual{{ID: "v", AssetID: "asset", StartMS: 1000, EndMS: 2000, SourceEndMS: 1000, SourceFill: "hold_last_frame", Fit: "cover"}}, 3000)
+	if len(visuals) != 3 || visuals[0].StartMS != 0 || visuals[0].EndMS != 1000 || visuals[2].StartMS != 2000 || visuals[2].EndMS != 3000 {
+		t.Fatalf("unexpected filled timeline: %#v", visuals)
+	}
+	if visuals[0].AssetID != "asset" || visuals[2].AssetID != "asset" {
+		t.Fatalf("gap fillers changed asset continuity: %#v", visuals)
 	}
 }
 
@@ -96,7 +106,7 @@ func TestBuildUsesValidatedSemanticBeats(t *testing.T) {
 	alignmentPath, assetsPath := filepath.Join(root, "alignment.json"), filepath.Join(root, "assets.json")
 	writeJSON(t, alignmentPath, alignment.Result{Voiceover: alignment.Voiceover{Audio: audio.Probe{DurationMS: 3000}}, Transcript: asr.Transcript{Words: []asr.Word{{Text: "First", StartMS: 0, EndMS: 500}, {Text: "scene", StartMS: 500, EndMS: 1000}, {Text: "Second", StartMS: 1000, EndMS: 1500}, {Text: "scene", StartMS: 1500, EndMS: 2000}, {Text: "Final", StartMS: 2000, EndMS: 2500}, {Text: "scene", StartMS: 2500, EndMS: 3000}}}})
 	writeJSON(t, assetsPath, analyzeassets.Result{Assets: []analyzeassets.Asset{{AssetID: "first", Kind: "image", SHA256: "a"}, {AssetID: "second", Kind: "image", SHA256: "b"}, {AssetID: "final", Kind: "image", SHA256: "c"}}})
-	result, err := BuildWithDependencies(context.Background(), Options{AlignmentPath: alignmentPath, AssetsPath: assetsPath, StylePath: filepath.Join(root, "none.json"), AspectRatio: "16:9", SemanticEnabled: true}, Dependencies{SemanticPlanner: fakeSemanticPlanner{}}, nil)
+	result, err := BuildWithDependencies(context.Background(), Options{AlignmentPath: alignmentPath, AssetsPath: assetsPath, StylePath: filepath.Join(root, "none.json"), AspectRatio: "16:9", SemanticEnabled: true, AllAssets: true}, Dependencies{SemanticPlanner: fakeSemanticPlanner{}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,10 +115,30 @@ func TestBuildUsesValidatedSemanticBeats(t *testing.T) {
 	}
 }
 
+func TestBuildAllAssetsFallsBackWhenSemanticPlannerOmitsAsset(t *testing.T) {
+	root := t.TempDir()
+	alignmentPath, assetsPath := filepath.Join(root, "alignment.json"), filepath.Join(root, "assets.json")
+	writeJSON(t, alignmentPath, alignment.Result{Voiceover: alignment.Voiceover{Audio: audio.Probe{DurationMS: 3000}}, Transcript: asr.Transcript{Words: []asr.Word{{Text: "one", StartMS: 0, EndMS: 1000}, {Text: "two", StartMS: 1000, EndMS: 2000}, {Text: "three", StartMS: 2000, EndMS: 3000}}}})
+	writeJSON(t, assetsPath, analyzeassets.Result{Assets: []analyzeassets.Asset{{AssetID: "a", Kind: "image", SHA256: "a"}, {AssetID: "b", Kind: "image", SHA256: "b"}}})
+	result, err := BuildWithDependencies(context.Background(), Options{AlignmentPath: alignmentPath, AssetsPath: assetsPath, StylePath: filepath.Join(root, "none.json"), AspectRatio: "16:9", SemanticEnabled: true, AllAssets: true}, Dependencies{SemanticPlanner: incompleteSemanticPlanner{}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Semantic.Status != "forced_deterministic" || len(result.Visuals) != 2 || result.Visuals[0].AssetID != "a" || result.Visuals[1].AssetID != "b" {
+		t.Fatalf("unexpected all-assets fallback: %#v", result)
+	}
+}
+
 type fakeSemanticPlanner struct{}
 
 func (fakeSemanticPlanner) Plan(context.Context, SemanticRequest) ([]SemanticBeat, error) {
 	return []SemanticBeat{{WordFrom: 0, WordTo: 1, AssetID: "first", Role: "opening", Rationale: "first scene"}, {WordFrom: 2, WordTo: 3, AssetID: "second", Role: "change", Rationale: "second scene"}, {WordFrom: 4, WordTo: 5, AssetID: "final", Role: "ending", Rationale: "final scene"}}, nil
+}
+
+type incompleteSemanticPlanner struct{}
+
+func (incompleteSemanticPlanner) Plan(context.Context, SemanticRequest) ([]SemanticBeat, error) {
+	return []SemanticBeat{{WordFrom: 0, WordTo: 2, AssetID: "a"}}, nil
 }
 
 func writeJSON(t *testing.T, path string, value any) {

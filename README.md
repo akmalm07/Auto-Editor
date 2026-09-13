@@ -102,7 +102,16 @@ If the key, provider, or semantic pass is unavailable, deterministic style analy
 
 Use `auto-editor plan --no-semantic` to force that deterministic fallback for one run. `auto-editor run --no-semantic` also disables semantic planning.
 
-When `style.json` contains completed semantic `planning_preferences`, the planner applies them only as soft ranking inputs. It deterministically compares meaningful preference terms with completed literal/editorial asset metadata, weights matches by the reference set's semantic confidence, and uses original asset order to break ties. Preferences never remove an asset, invent an ID, alter narration timing, or override source-duration limits. The version 4 plan artifact records source hashes, semantic beat choices and rationales, and an explicit `hold_last_frame` policy when a short video must fill a longer planned slot.
+Pass `--all-assets` to require every eligible visual asset to appear at least once:
+
+```powershell
+auto-editor plan --all-assets
+auto-editor run --through render --all-assets
+```
+
+If the semantic response omits an asset, the planner uses a deterministic word-range split to satisfy the constraint. If there are more assets than transcript words, planning fails with an actionable error.
+
+When `style.json` contains completed semantic `planning_preferences`, the planner applies them only as soft ranking inputs. It deterministically compares meaningful preference terms with completed literal/editorial asset metadata, weights matches by the reference set's semantic confidence, and uses original asset order to break ties. Preferences never remove an asset, invent an ID, alter narration timing, or override source-duration limits. The version 5 plan artifact records source hashes, semantic beat choices and rationales, an explicit `hold_last_frame` policy when a short video must fill a longer planned slot, and optional background-music tracks.
 
 Explicit-path command variants remain available when artifacts live outside the standard project location:
 
@@ -116,7 +125,16 @@ auto-editor plan --index .auto-editor/index.json --assets .auto-editor/assets.js
 
 ## Rendering
 
-`render` turns the current version-3 plan into a deterministic H.264/AAC MP4. It verifies the voiceover and each selected asset against the hashes recorded in the plan before invoking FFmpeg, so changed media requires the relevant upstream stages to run again. Images are held for their planned duration; a video that is shorter than its planned slot freezes on its final frame. The initial renderer uses hard cuts, `cover` scale/crop, the voiceover as its sole audio track, and optional burned-in ASS captions.
+`render` turns the current plan into a deterministic H.264/AAC MP4. It verifies the voiceover, selected visuals, and optional music against the hashes recorded in the plan before invoking FFmpeg, so changed media requires the relevant upstream stages to run again. Images are held for their planned duration; a video that is shorter than its planned slot freezes on its final frame. Background music is mixed beneath the voiceover with configurable volume, fades, and optional side-chain ducking.
+
+Provide music during initialization (the flag may be repeated), or add paths under `inputs.music` in `auto-editor.json`:
+
+```powershell
+auto-editor init --name launch-video --script script.txt --voiceover voiceover.wav --asset assets --music music/background.mp3
+auto-editor run --through render
+```
+
+The related settings are `render.music_volume_db` (default `-18`), `render.music_fade_in_ms`/`render.music_fade_out_ms` (default `500`), `render.music_ducking` (default `true`), and `render.music_duck_ratio` (default `8`).
 
 ```powershell
 auto-editor render --out output/render.mp4

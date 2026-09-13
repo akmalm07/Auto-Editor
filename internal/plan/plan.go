@@ -15,7 +15,7 @@ import (
 )
 
 const DefaultPlanPath = ".auto-editor/plan.json"
-const Version = 4
+const Version = 5
 
 type Result struct {
 	Version     int                 `json:"version"`
@@ -28,6 +28,7 @@ type Result struct {
 	Semantic    SemanticPlan        `json:"semantic_plan"`
 	Visuals     []Visual            `json:"visuals"`
 	Captions    []Caption           `json:"captions"`
+	AudioTracks []AudioTrack        `json:"audio_tracks,omitempty"`
 	Warnings    []ingest.Diagnostic `json:"warnings,omitempty"`
 }
 type Format struct {
@@ -65,10 +66,24 @@ type Caption struct {
 	ScriptWordFrom int    `json:"script_word_from"`
 	ScriptWordTo   int    `json:"script_word_to"`
 }
+type AudioTrack struct {
+	AssetID            string  `json:"asset_id"`
+	Path               string  `json:"path"`
+	SHA256             string  `json:"sha256"`
+	StartMS            int64   `json:"start_ms"`
+	EndMS              int64   `json:"end_ms"`
+	SourceStartMS      int64   `json:"source_start_ms"`
+	VolumeDB           float64 `json:"volume_db"`
+	DuckUnderVoiceover bool    `json:"duck_under_voiceover"`
+	FadeInMS           int64   `json:"fade_in_ms"`
+	FadeOutMS          int64   `json:"fade_out_ms"`
+}
 type Options struct {
 	AlignmentPath, AssetsPath, StylePath, OutputPath string
 	AspectRatio                                      string
 	SemanticEnabled                                  bool
+	AllAssets                                        bool
+	IndexPath                                        string
 }
 type StageReporter func(current, total int, message string)
 type Dependencies struct{ SemanticPlanner SemanticPlanner }
@@ -120,6 +135,15 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 		duration = alignmentResult.Segments[len(alignmentResult.Segments)-1].EndMS
 	}
 	result := Result{Version: Version, ProjectName: alignmentResult.ProjectName, GeneratedAt: time.Now().UTC(), Format: Format{AspectRatio: options.AspectRatio, DurationMS: duration}, Sources: Sources{Alignment: options.AlignmentPath, Assets: options.AssetsPath}, Voiceover: Voiceover{AssetID: alignmentResult.Voiceover.ID, Path: alignmentResult.Voiceover.Path, SHA256: alignmentResult.Voiceover.SHA256}, Semantic: SemanticPlan{Status: "skipped"}}
+	if options.IndexPath != "" {
+		if index, indexErr := ingest.ReadIndex(resolve(options.IndexPath)); indexErr == nil {
+			for _, music := range index.Music {
+				result.AudioTracks = append(result.AudioTracks, AudioTrack{AssetID: music.ID, Path: music.Path, SHA256: music.SHA256, StartMS: 0, EndMS: duration, DuckUnderVoiceover: true})
+			}
+		} else {
+			result.Warnings = append(result.Warnings, ingest.Diagnostic{Level: "warning", Field: "inputs.music", Message: "could not read music records: " + indexErr.Error()})
+		}
+	}
 	if styleErr == nil {
 		result.Sources.Style = options.StylePath
 	} else {
@@ -130,9 +154,12 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 		if report != nil {
 			report(1, 1, "Planning semantic visual beats")
 		}
-		beats, semanticErr := deps.SemanticPlanner.Plan(ctx, semanticRequest(alignmentResult, visuals, result.Selection.Preferences))
+		beats, semanticErr := deps.SemanticPlanner.Plan(ctx, semanticRequest(alignmentResult, visuals, result.Selection.Preferences, options.AllAssets))
 		if semanticErr == nil {
 			semanticErr = validateSemanticBeats(beats, alignmentResult.Transcript.Words, visuals)
+		}
+		if semanticErr == nil && options.AllAssets {
+			semanticErr = validateAllAssets(beats, visuals)
 		}
 		if semanticErr == nil {
 			byID := make(map[string]analyzeassets.Asset, len(visuals))
@@ -157,12 +184,34 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 				result.Visuals = append(result.Visuals, Visual{ID: fmt.Sprintf("visual_%03d", index), AssetID: asset.AssetID, StartMS: start, EndMS: end, SourceEndMS: sourceEnd, SourceSHA256: asset.SHA256, SourceFill: "hold_last_frame", Fit: "cover", Role: role, SemanticRationale: beat.Rationale})
 				result.Captions = append(result.Captions, Caption{ID: fmt.Sprintf("caption_%03d", index), StartMS: start, EndMS: end, Text: wordsText(alignmentResult.Transcript.Words[beat.WordFrom : beat.WordTo+1])})
 			}
+			result.Visuals = fillTimelineGaps(result.Visuals, duration)
 			return result, nil
 		}
 		result.Semantic = SemanticPlan{Status: "failed"}
 		result.Warnings = append(result.Warnings, ingest.Diagnostic{Level: "warning", Field: "planning.semantic", Message: "semantic planning failed; using deterministic segments: " + semanticErr.Error()})
 	} else if options.SemanticEnabled {
 		result.Warnings = append(result.Warnings, ingest.Diagnostic{Level: "warning", Field: "planning.semantic", Message: "semantic planning was not configured; using deterministic segments"})
+	}
+	if options.AllAssets {
+		beats, forcedErr := forcedBeats(alignmentResult.Transcript.Words, visuals)
+		if forcedErr != nil {
+			return Result{}, forcedErr
+		}
+		result.Semantic = SemanticPlan{Status: "forced_deterministic", Beats: beats}
+		result.Visuals = nil
+		result.Captions = nil
+		for index, beat := range beats {
+			asset := visuals[index]
+			start, end := alignmentResult.Transcript.Words[beat.WordFrom].StartMS, alignmentResult.Transcript.Words[beat.WordTo].EndMS
+			sourceEnd := end - start
+			if asset.Kind == ingest.KindVideo && asset.Technical.DurationMS > 0 && sourceEnd > asset.Technical.DurationMS {
+				sourceEnd = asset.Technical.DurationMS
+			}
+			result.Visuals = append(result.Visuals, Visual{ID: fmt.Sprintf("visual_%03d", index), AssetID: asset.AssetID, StartMS: start, EndMS: end, SourceEndMS: sourceEnd, SourceSHA256: asset.SHA256, SourceFill: "hold_last_frame", Fit: "cover", Role: asset.Editorial.Intent, SemanticRationale: "--all-assets constraint"})
+			result.Captions = append(result.Captions, Caption{ID: fmt.Sprintf("caption_%03d", index), StartMS: start, EndMS: end, Text: wordsText(alignmentResult.Transcript.Words[beat.WordFrom : beat.WordTo+1])})
+		}
+		result.Visuals = fillTimelineGaps(result.Visuals, duration)
+		return result, nil
 	}
 	for index, segment := range alignmentResult.Segments {
 		if report != nil {
@@ -184,7 +233,40 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 		result.Visuals = append(result.Visuals, Visual{ID: fmt.Sprintf("visual_%03d", index), AssetID: asset.AssetID, StartMS: segment.StartMS, EndMS: end, SourceEndMS: sourceEnd, SourceSHA256: asset.SHA256, SourceFill: "hold_last_frame", Fit: "cover", Role: role})
 		result.Captions = append(result.Captions, Caption{ID: fmt.Sprintf("caption_%03d", index), StartMS: segment.StartMS, EndMS: end, Text: segment.Text, ScriptWordFrom: segment.ScriptWordFrom, ScriptWordTo: segment.ScriptWordTo})
 	}
+	result.Visuals = fillTimelineGaps(result.Visuals, duration)
 	return result, nil
+}
+
+// fillTimelineGaps keeps the picture continuous during narration pauses by
+// holding the nearest planned visual instead of leaving a blank interval.
+func fillTimelineGaps(visuals []Visual, duration int64) []Visual {
+	if len(visuals) == 0 || duration <= 0 {
+		return visuals
+	}
+	filled := make([]Visual, 0, len(visuals)+2)
+	previousEnd := int64(0)
+	for _, visual := range visuals {
+		if visual.StartMS > previousEnd {
+			base := visual
+			if len(filled) > 0 {
+				base = filled[len(filled)-1]
+			}
+			base.ID = fmt.Sprintf("visual_fill_%03d", len(filled))
+			base.StartMS, base.EndMS = previousEnd, visual.StartMS
+			base.SourceStartMS, base.SourceEndMS = 0, base.EndMS-base.StartMS
+			filled = append(filled, base)
+		}
+		filled = append(filled, visual)
+		previousEnd = visual.EndMS
+	}
+	if previousEnd < duration {
+		base := filled[len(filled)-1]
+		base.ID = fmt.Sprintf("visual_fill_%03d", len(filled))
+		base.StartMS, base.EndMS = previousEnd, duration
+		base.SourceStartMS, base.SourceEndMS = 0, base.EndMS-base.StartMS
+		filled = append(filled, base)
+	}
+	return filled
 }
 
 func Write(path string, result Result) error {

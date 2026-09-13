@@ -101,9 +101,11 @@ func TestBuildWithFFmpeg(t *testing.T) {
 	image := filepath.Join(root, "image.jpg")
 	video := filepath.Join(root, "video.mp4")
 	voice := filepath.Join(root, "voice.wav")
+	music := filepath.Join(root, "music.wav")
 	runFFmpeg(t, ffmpeg, "-f", "lavfi", "-i", "color=c=navy:s=320x180:d=1", "-frames:v", "1", image)
 	runFFmpeg(t, ffmpeg, "-f", "lavfi", "-i", "color=c=green:s=320x180:d=0.25", "-c:v", "libx264", "-pix_fmt", "yuv420p", video)
 	runFFmpeg(t, ffmpeg, "-f", "lavfi", "-i", "sine=frequency=440:duration=1", voice)
+	runFFmpeg(t, ffmpeg, "-f", "lavfi", "-i", "sine=frequency=220:duration=1", music)
 	voiceHash, err := hash(voice)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +124,11 @@ func TestBuildWithFFmpeg(t *testing.T) {
 	if err := artifact.Write(filepath.Join(root, ".auto-editor", "assets.json"), analyzeassets.Result{Assets: []analyzeassets.Asset{{AssetID: "image", Path: "image.jpg", Kind: "image", SHA256: imageHash}, {AssetID: "video", Path: "video.mp4", Kind: "video", SHA256: videoHash}}}); err != nil {
 		t.Fatal(err)
 	}
-	p := plan.Result{Version: plan.Version, Format: plan.Format{AspectRatio: "16:9", DurationMS: 1000}, Sources: plan.Sources{Alignment: ".auto-editor/alignment.json", Assets: ".auto-editor/assets.json"}, Voiceover: plan.Voiceover{AssetID: "voice", Path: "voice.wav", SHA256: voiceHash}, Visuals: []plan.Visual{{ID: "v1", AssetID: "image", StartMS: 100, EndMS: 500, SourceEndMS: 400, SourceSHA256: imageHash, SourceFill: "hold_last_frame", Fit: "cover"}, {ID: "v2", AssetID: "video", StartMS: 500, EndMS: 900, SourceEndMS: 250, SourceSHA256: videoHash, SourceFill: "hold_last_frame", Fit: "cover"}}}
+	musicHash, err := hash(music)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := plan.Result{Version: plan.Version, Format: plan.Format{AspectRatio: "16:9", DurationMS: 1000}, Sources: plan.Sources{Alignment: ".auto-editor/alignment.json", Assets: ".auto-editor/assets.json"}, Voiceover: plan.Voiceover{AssetID: "voice", Path: "voice.wav", SHA256: voiceHash}, Visuals: []plan.Visual{{ID: "v1", AssetID: "image", StartMS: 100, EndMS: 500, SourceEndMS: 400, SourceSHA256: imageHash, SourceFill: "hold_last_frame", Fit: "cover"}, {ID: "v2", AssetID: "video", StartMS: 500, EndMS: 900, SourceEndMS: 250, SourceSHA256: videoHash, SourceFill: "hold_last_frame", Fit: "cover"}}, AudioTracks: []plan.AudioTrack{{AssetID: "music", Path: "music.wav", SHA256: musicHash, StartMS: 0, EndMS: 1000, DuckUnderVoiceover: true}}}
 	planPath := filepath.Join(root, ".auto-editor", "plan.json")
 	if err := artifact.Write(planPath, p); err != nil {
 		t.Fatal(err)

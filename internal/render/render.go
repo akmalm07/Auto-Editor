@@ -123,7 +123,7 @@ func Build(ctx context.Context, options Options, deps Dependencies, report Stage
 	if err != nil {
 		return Result{}, fmt.Errorf("read plan alignment artifact: %w", err)
 	}
-	voiceover, sources, err := verifySources(projectRoot, planValue, assets, aligned)
+	voiceover, sources, musicTracks, err := verifySources(projectRoot, planValue, assets, aligned)
 	if err != nil {
 		return Result{}, err
 	}
@@ -187,7 +187,7 @@ func Build(ctx context.Context, options Options, deps Dependencies, report Stage
 	_ = temp.Close()
 	_ = os.Remove(tempPath)
 	defer func() { _ = os.Remove(tempPath) }()
-	if err := muxFinal(ctx, deps.Runner, workDir, videoPath, voiceover, captionPath, tempPath, options.Settings); err != nil {
+	if err := muxFinal(ctx, deps.Runner, workDir, videoPath, voiceover, captionPath, musicTracks, tempPath, options.Settings); err != nil {
 		return fail("mux output", err)
 	}
 	stage(6, "Verifying rendered output")
@@ -244,16 +244,16 @@ func readPlan(path string) (plan.Result, string, error) {
 	return value, hex.EncodeToString(sum[:]), nil
 }
 
-func verifySources(root string, p plan.Result, assets analyzeassets.Result, aligned alignment.Result) (string, []Source, error) {
+func verifySources(root string, p plan.Result, assets analyzeassets.Result, aligned alignment.Result) (string, []Source, []plan.AudioTrack, error) {
 	if p.Voiceover.AssetID == "" || p.Voiceover.Path == "" || p.Voiceover.SHA256 == "" {
-		return "", nil, fmt.Errorf("plan voiceover fingerprint is missing; run plan again")
+		return "", nil, nil, fmt.Errorf("plan voiceover fingerprint is missing; run plan again")
 	}
 	if p.Voiceover.AssetID != aligned.Voiceover.ID || p.Voiceover.SHA256 != aligned.Voiceover.SHA256 {
-		return "", nil, fmt.Errorf("plan voiceover does not match its alignment artifact; run plan again")
+		return "", nil, nil, fmt.Errorf("plan voiceover does not match its alignment artifact; run plan again")
 	}
 	voicePath := artifact.ResolvePath(root, p.Voiceover.Path)
 	if err := verifyHash(voicePath, p.Voiceover.SHA256); err != nil {
-		return "", nil, fmt.Errorf("voiceover changed since planning: %w; run ingest, align, and plan again", err)
+		return "", nil, nil, fmt.Errorf("voiceover changed since planning: %w; run ingest, align, and plan again", err)
 	}
 	byID := make(map[string]analyzeassets.Asset, len(assets.Assets))
 	for _, a := range assets.Assets {
@@ -263,17 +263,31 @@ func verifySources(root string, p plan.Result, assets analyzeassets.Result, alig
 	for _, visual := range p.Visuals {
 		asset, ok := byID[visual.AssetID]
 		if !ok {
-			return "", nil, fmt.Errorf("plan visual %s references unknown asset %s", visual.ID, visual.AssetID)
+			return "", nil, nil, fmt.Errorf("plan visual %s references unknown asset %s", visual.ID, visual.AssetID)
 		}
 		if visual.SourceSHA256 == "" || visual.SourceSHA256 != asset.SHA256 {
-			return "", nil, fmt.Errorf("plan visual %s fingerprint does not match asset analysis; run plan again", visual.ID)
+			return "", nil, nil, fmt.Errorf("plan visual %s fingerprint does not match asset analysis; run plan again", visual.ID)
 		}
 		if err := verifyHash(artifact.ResolvePath(root, asset.Path), asset.SHA256); err != nil {
-			return "", nil, fmt.Errorf("asset %s changed since planning: %w; run ingest, analyze-assets, and plan again", asset.Path, err)
+			return "", nil, nil, fmt.Errorf("asset %s changed since planning: %w; run ingest, analyze-assets, and plan again", asset.Path, err)
 		}
 		sources = append(sources, Source{AssetID: asset.AssetID, Path: asset.Path, SHA256: asset.SHA256, Kind: asset.Kind})
 	}
-	return voicePath, sources, nil
+	musicTracks := make([]plan.AudioTrack, 0, len(p.AudioTracks))
+	for _, track := range p.AudioTracks {
+		if track.AssetID == "" || track.Path == "" || track.SHA256 == "" || track.EndMS <= track.StartMS || track.VolumeDB > 12 || track.VolumeDB < -60 {
+			return "", nil, nil, fmt.Errorf("music track %q has invalid metadata", track.AssetID)
+		}
+		path := artifact.ResolvePath(root, track.Path)
+		if err := verifyHash(path, track.SHA256); err != nil {
+			return "", nil, nil, fmt.Errorf("music asset %s changed since planning: %w; run ingest and plan again", track.Path, err)
+		}
+		track.Path = path
+		musicTracks = append(musicTracks, track)
+		relPath, _ := filepath.Rel(root, path)
+		sources = append(sources, Source{AssetID: track.AssetID, Path: filepath.ToSlash(relPath), SHA256: track.SHA256, Kind: "music"})
+	}
+	return voicePath, sources, musicTracks, nil
 }
 
 func verifyHash(path, expected string) error {
@@ -322,6 +336,11 @@ func validatePlan(p plan.Result, s config.RenderConfig) error {
 	for _, c := range p.Captions {
 		if c.EndMS <= c.StartMS || c.StartMS < 0 || c.EndMS > p.Format.DurationMS || strings.TrimSpace(c.Text) == "" {
 			return fmt.Errorf("plan caption %q has invalid timing or text", c.ID)
+		}
+	}
+	for _, track := range p.AudioTracks {
+		if track.AssetID == "" || track.Path == "" || track.SHA256 == "" || track.StartMS < 0 || track.EndMS <= track.StartMS || track.EndMS > p.Format.DurationMS {
+			return fmt.Errorf("music track %q has unsupported or invalid timing", track.AssetID)
 		}
 	}
 	return nil

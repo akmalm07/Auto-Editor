@@ -138,7 +138,7 @@ func Build(ctx context.Context, options Options, dependencies Dependencies, repo
 	if err != nil {
 		return Result{}, err
 	}
-	transcriptTokens, err := transcriptTokens(transcript)
+	transcriptTokens, timestampRepairs, err := transcriptTokens(transcript)
 	if err != nil {
 		return Result{}, err
 	}
@@ -161,6 +161,9 @@ func Build(ctx context.Context, options Options, dependencies Dependencies, repo
 		Transcript:  transcript,
 		Metrics:     metrics,
 		Segments:    segments,
+	}
+	if timestampRepairs > 0 {
+		result.Warnings = append(result.Warnings, warning("transcript.words", fmt.Sprintf("normalized %d invalid or overlapping word timestamp(s) returned by the transcription provider", timestampRepairs)))
 	}
 	if metrics.Similarity < options.MinSimilarity {
 		result.Warnings = append(result.Warnings, warning("alignment", fmt.Sprintf("script/transcript similarity %.2f is below configured threshold %.2f", metrics.Similarity, options.MinSimilarity)))
@@ -207,22 +210,35 @@ func tokenize(text string) []token {
 	return tokens
 }
 
-func transcriptTokens(transcript asr.Transcript) ([]token, error) {
+func transcriptTokens(transcript asr.Transcript) ([]token, int, error) {
 	if strings.TrimSpace(transcript.Text) == "" {
-		return nil, fmt.Errorf("transcription is empty")
+		return nil, 0, fmt.Errorf("transcription is empty")
 	}
 	if len(transcript.Words) == 0 {
-		return nil, fmt.Errorf("transcription has no word timestamps")
+		return nil, 0, fmt.Errorf("transcription has no word timestamps")
 	}
 	var tokens []token
 	var previousEnd int64
-	for _, word := range transcript.Words {
+	repairs := 0
+	for wordIndex, word := range transcript.Words {
 		words := tokenize(word.Text)
 		if len(words) == 0 {
 			continue
 		}
-		if word.StartMS < previousEnd || word.EndMS <= word.StartMS {
-			return nil, fmt.Errorf("transcription has invalid or non-monotonic word timestamps")
+		if word.StartMS < 0 {
+			word.StartMS = 0
+			repairs++
+		}
+		if word.StartMS < previousEnd {
+			repairs++
+			word.StartMS = previousEnd
+		}
+		if word.EndMS <= word.StartMS {
+			word.EndMS = nextWordStart(transcript.Words, wordIndex, word.StartMS)
+			if word.EndMS <= word.StartMS {
+				word.EndMS = word.StartMS + 1
+			}
+			repairs++
 		}
 		span := word.EndMS - word.StartMS
 		for index := range words {
@@ -233,9 +249,18 @@ func transcriptTokens(transcript asr.Transcript) ([]token, error) {
 		previousEnd = word.EndMS
 	}
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("transcription contains no alignable words")
+		return nil, repairs, fmt.Errorf("transcription contains no alignable words")
 	}
-	return tokens, nil
+	return tokens, repairs, nil
+}
+
+func nextWordStart(words []asr.Word, current int, minimum int64) int64 {
+	for _, word := range words[current+1:] {
+		if word.StartMS > minimum {
+			return word.StartMS
+		}
+	}
+	return minimum
 }
 
 type operation struct {

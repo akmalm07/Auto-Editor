@@ -38,6 +38,6 @@ try {
 }
 
 Invoke-AutoEditor @('--project', $projectPath, 'status')
-Invoke-AutoEditor @('--project', $projectPath, 'run', '--through', 'render')
+Invoke-AutoEditor @('--project', $projectPath, 'run', '--through', 'render', '--all-assets')
 Invoke-AutoEditor @('--project', $projectPath, 'status')
 Write-Host "Integration test completed through render."

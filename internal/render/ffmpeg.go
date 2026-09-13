@@ -109,12 +109,55 @@ func concatClips(ctx context.Context, runner Runner, workDir string, clips []str
 	return nil
 }
 
-func muxFinal(ctx context.Context, runner Runner, workDir, videoPath, voiceoverPath, captionPath, outputPath string, settings config.RenderConfig) error {
+func muxFinal(ctx context.Context, runner Runner, workDir, videoPath, voiceoverPath, captionPath string, musicTracks []plan.AudioTrack, outputPath string, settings config.RenderConfig) error {
 	args := []string{"-hide_banner", "-nostdin", "-y", "-i", videoPath, "-i", voiceoverPath}
+	for _, track := range musicTracks {
+		args = append(args, "-stream_loop", "-1", "-i", track.Path)
+	}
 	if captionPath != "" {
 		args = append(args, "-vf", "ass="+filepath.Base(captionPath))
 	}
-	args = append(args, "-map", "0:v:0", "-map", "1:a:0", "-c:v", settings.VideoCodec, "-crf", strconv.Itoa(settings.CRF), "-preset", settings.Preset, "-c:a", settings.AudioCodec, "-b:a", settings.AudioBitrate, "-shortest", "-movflags", "+faststart", outputPath)
+	if len(musicTracks) == 0 {
+		args = append(args, "-map", "0:v:0", "-map", "1:a:0")
+	} else {
+		filters := make([]string, 0, len(musicTracks)+2)
+		musicLabels := make([]string, 0, len(musicTracks))
+		for index, track := range musicTracks {
+			input := index + 2
+			label := fmt.Sprintf("m%d", index)
+			volumeDB, fadeInMS, fadeOutMS := settings.MusicVolumeDB, settings.MusicFadeInMS, settings.MusicFadeOutMS
+			if track.VolumeDB != 0 {
+				volumeDB = track.VolumeDB
+			}
+			if track.FadeInMS != 0 {
+				fadeInMS = track.FadeInMS
+			}
+			if track.FadeOutMS != 0 {
+				fadeOutMS = track.FadeOutMS
+			}
+			filter := fmt.Sprintf("[%d:a]atrim=start=%s:duration=%s,asetpts=PTS-STARTPTS,volume=%sdB", input, seconds(track.SourceStartMS), seconds(track.EndMS-track.StartMS), formatDB(volumeDB))
+			if track.StartMS > 0 {
+				filter += fmt.Sprintf(",adelay=%d|%d", track.StartMS, track.StartMS)
+			}
+			if fadeInMS > 0 {
+				filter += fmt.Sprintf(",afade=t=in:st=0:d=%s", seconds(fadeInMS))
+			}
+			if fadeOutMS > 0 {
+				filter += fmt.Sprintf(",afade=t=out:st=%s:d=%s", seconds(max64(track.EndMS-track.StartMS-fadeOutMS, 0)), seconds(fadeOutMS))
+			}
+			filter += "[" + label + "]"
+			filters = append(filters, filter)
+			musicLabels = append(musicLabels, "["+label+"]")
+		}
+		filters = append(filters, strings.Join(musicLabels, "")+fmt.Sprintf("amix=inputs=%d:duration=longest:dropout_transition=0[music]", len(musicTracks)))
+		if settings.MusicDucking {
+			filters = append(filters, "[music][1:a]sidechaincompress=threshold=0.02:ratio="+formatFloat(settings.MusicDuckRatio)+":attack=20:release=400[ducked]", "[1:a][ducked]amix=inputs=2:duration=first:dropout_transition=0[aout]")
+		} else {
+			filters = append(filters, "[1:a][music]amix=inputs=2:duration=first:dropout_transition=0[aout]")
+		}
+		args = append(args, "-filter_complex", strings.Join(filters, ";"), "-map", "0:v:0", "-map", "[aout]")
+	}
+	args = append(args, "-c:v", settings.VideoCodec, "-crf", strconv.Itoa(settings.CRF), "-preset", settings.Preset, "-c:a", settings.AudioCodec, "-b:a", settings.AudioBitrate, "-shortest", "-movflags", "+faststart", outputPath)
 	output, err := runner.Run(ctx, workDir, settings.FFmpeg, args...)
 	if err != nil {
 		return commandError("mux final output", output, err)
@@ -175,4 +218,13 @@ func commandError(stage string, output []byte, err error) error {
 		return fmt.Errorf("%s is not installed or not on PATH", execErr.Name)
 	}
 	return fmt.Errorf("%s: %w: %s", stage, err, message)
+}
+
+func formatDB(value float64) string    { return strconv.FormatFloat(value, 'f', 2, 64) }
+func formatFloat(value float64) string { return strconv.FormatFloat(value, 'f', 2, 64) }
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -20,6 +20,7 @@ type ProjectInput struct {
 	Script        string         `json:"script,omitempty"`
 	Voiceover     string         `json:"voiceover,omitempty"`
 	Assets        []string       `json:"assets,omitempty"`
+	Music         []string       `json:"music,omitempty"`
 	ReferenceSets []ReferenceSet `json:"reference_sets,omitempty"`
 }
 

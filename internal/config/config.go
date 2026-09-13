@@ -62,17 +62,22 @@ type StyleConfig struct {
 }
 
 type RenderConfig struct {
-	FFmpeg       string        `json:"ffmpeg"`
-	FFprobe      string        `json:"ffprobe"`
-	Width        int           `json:"width"`
-	Height       int           `json:"height"`
-	FPS          int           `json:"fps"`
-	VideoCodec   string        `json:"video_codec"`
-	CRF          int           `json:"crf"`
-	Preset       string        `json:"preset"`
-	AudioCodec   string        `json:"audio_codec"`
-	AudioBitrate string        `json:"audio_bitrate"`
-	Captions     CaptionConfig `json:"captions"`
+	FFmpeg         string        `json:"ffmpeg"`
+	FFprobe        string        `json:"ffprobe"`
+	Width          int           `json:"width"`
+	Height         int           `json:"height"`
+	FPS            int           `json:"fps"`
+	VideoCodec     string        `json:"video_codec"`
+	CRF            int           `json:"crf"`
+	Preset         string        `json:"preset"`
+	AudioCodec     string        `json:"audio_codec"`
+	AudioBitrate   string        `json:"audio_bitrate"`
+	MusicDucking   bool          `json:"music_ducking"`
+	MusicDuckRatio float64       `json:"music_duck_ratio"`
+	MusicVolumeDB  float64       `json:"music_volume_db"`
+	MusicFadeInMS  int64         `json:"music_fade_in_ms"`
+	MusicFadeOutMS int64         `json:"music_fade_out_ms"`
+	Captions       CaptionConfig `json:"captions"`
 }
 
 type CaptionConfig struct {
@@ -135,6 +140,7 @@ func Default() Config {
 		Render: RenderConfig{
 			FFmpeg: "ffmpeg", FFprobe: "ffprobe", Width: 1920, Height: 1080, FPS: 30,
 			VideoCodec: "libx264", CRF: 18, Preset: "medium", AudioCodec: "aac", AudioBitrate: "192k",
+			MusicDucking: true, MusicDuckRatio: 8, MusicVolumeDB: -18, MusicFadeInMS: 500, MusicFadeOutMS: 500,
 			Captions: CaptionConfig{Enabled: true, FontFamily: "Arial", FontSize: 56, MarginBottom: 140, OutlineWidth: 4},
 		},
 	}
@@ -273,6 +279,15 @@ func (c Config) Validate() error {
 	}
 	if c.Render.CRF < 0 || c.Render.CRF > 51 {
 		return fmt.Errorf("render.crf must be between 0 and 51")
+	}
+	if c.Render.MusicDuckRatio < 1 || c.Render.MusicDuckRatio > 20 {
+		return fmt.Errorf("render.music_duck_ratio must be between 1 and 20")
+	}
+	if c.Render.MusicVolumeDB < -60 || c.Render.MusicVolumeDB > 12 {
+		return fmt.Errorf("render.music_volume_db must be between -60 and 12")
+	}
+	if c.Render.MusicFadeInMS < 0 || c.Render.MusicFadeOutMS < 0 {
+		return fmt.Errorf("render music fade durations must be non-negative")
 	}
 	if c.Render.Captions.Enabled && (c.Render.Captions.FontFamily == "" || c.Render.Captions.FontSize <= 0 || c.Render.Captions.MarginBottom < 0 || c.Render.Captions.OutlineWidth < 0) {
 		return fmt.Errorf("render caption settings are invalid")

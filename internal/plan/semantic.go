@@ -17,6 +17,7 @@ type SemanticRequest struct {
 	Words            []TimedWord     `json:"words"`
 	Assets           []SemanticAsset `json:"assets"`
 	StylePreferences []string        `json:"style_preferences,omitempty"`
+	AllAssets        bool            `json:"all_assets"`
 }
 
 type TimedWord struct {
@@ -43,8 +44,8 @@ type SemanticPlan struct {
 	Beats  []SemanticBeat `json:"beats,omitempty"`
 }
 
-func semanticRequest(aligned alignment.Result, assets []analyzeassets.Asset, stylePreferences []PlanningPreference) SemanticRequest {
-	request := SemanticRequest{Words: make([]TimedWord, 0, len(aligned.Transcript.Words)), Assets: make([]SemanticAsset, 0, len(assets))}
+func semanticRequest(aligned alignment.Result, assets []analyzeassets.Asset, stylePreferences []PlanningPreference, allAssets bool) SemanticRequest {
+	request := SemanticRequest{Words: make([]TimedWord, 0, len(aligned.Transcript.Words)), Assets: make([]SemanticAsset, 0, len(assets)), AllAssets: allAssets}
 	for index, word := range aligned.Transcript.Words {
 		request.Words = append(request.Words, TimedWord{Index: index, Text: word.Text, StartMS: word.StartMS, EndMS: word.EndMS})
 	}
@@ -76,6 +77,34 @@ func validateSemanticBeats(beats []SemanticBeat, words []asr.Word, assets []anal
 		return fmt.Errorf("beats do not cover every transcript word")
 	}
 	return nil
+}
+
+func validateAllAssets(beats []SemanticBeat, assets []analyzeassets.Asset) error {
+	used := make(map[string]bool, len(beats))
+	for _, beat := range beats {
+		used[beat.AssetID] = true
+	}
+	for _, asset := range assets {
+		if !used[asset.AssetID] {
+			return fmt.Errorf("semantic beats did not use asset %s", asset.AssetID)
+		}
+	}
+	return nil
+}
+
+func forcedBeats(words []asr.Word, assets []analyzeassets.Asset) ([]SemanticBeat, error) {
+	if len(words) < len(assets) {
+		return nil, fmt.Errorf("--all-assets requires at least one transcript word per visual asset (%d words, %d assets)", len(words), len(assets))
+	}
+	beats := make([]SemanticBeat, 0, len(assets))
+	wordIndex := 0
+	for assetIndex, asset := range assets {
+		remainingWords, remainingAssets := len(words)-wordIndex, len(assets)-assetIndex
+		count := (remainingWords + remainingAssets - 1) / remainingAssets
+		beats = append(beats, SemanticBeat{WordFrom: wordIndex, WordTo: wordIndex + count - 1, AssetID: asset.AssetID, Role: asset.Editorial.Intent, Rationale: "--all-assets constraint"})
+		wordIndex += count
+	}
+	return beats, nil
 }
 
 func wordsText(words []asr.Word) string {

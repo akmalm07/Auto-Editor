@@ -32,6 +32,7 @@ type Index struct {
 	Script        *FileRecord         `json:"script,omitempty"`
 	Voiceover     *FileRecord         `json:"voiceover,omitempty"`
 	Assets        []FileRecord        `json:"assets,omitempty"`
+	Music         []FileRecord        `json:"music,omitempty"`
 	ReferenceSets []ReferenceSetIndex `json:"reference_sets,omitempty"`
 	Warnings      []Diagnostic        `json:"warnings,omitempty"`
 }
@@ -111,6 +112,7 @@ func BuildIndexWithProgress(manifestPath string, report StageReporter) (Index, e
 	builder.indexVoiceover()
 	stage(4, "Expanding asset paths")
 	builder.indexAssets()
+	builder.indexMusic()
 	stage(5, "Expanding reference paths")
 	builder.indexReferences()
 	stage(6, "Checking duplicate content")
@@ -203,6 +205,12 @@ func (b *indexBuilder) indexVoiceover() {
 func (b *indexBuilder) indexAssets() {
 	records := b.indexMany("inputs.assets", "asset", b.manifest.Inputs.Assets, []string{KindAudio, KindImage, KindVideo, KindText, KindSubtitle})
 	b.index.Assets = records
+	b.records = append(b.records, records...)
+}
+
+func (b *indexBuilder) indexMusic() {
+	records := b.indexMany("inputs.music", "music", b.manifest.Inputs.Music, []string{KindAudio})
+	b.index.Music = records
 	b.records = append(b.records, records...)
 }
 

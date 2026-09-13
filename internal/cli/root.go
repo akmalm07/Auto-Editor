@@ -284,8 +284,10 @@ func runInit(args []string, ctx app.App) error {
 	voiceover := fs.String("voiceover", "", "path to the voiceover audio")
 
 	var assets stringListFlag
+	var music stringListFlag
 	var references stringListFlag
 	fs.Var(&assets, "asset", "asset file or directory path; may be repeated")
+	fs.Var(&music, "music", "background music file or directory path; may be repeated")
 	fs.Var(&references, "reference", "reference set in name=path form; may be repeated")
 
 	if err := fs.Parse(args); err != nil {
@@ -314,6 +316,7 @@ func runInit(args []string, ctx app.App) error {
 	manifest.Inputs.Script = *script
 	manifest.Inputs.Voiceover = *voiceover
 	manifest.Inputs.Assets = assets
+	manifest.Inputs.Music = music
 
 	referenceSets, err := parseReferenceSets(references)
 	if err != nil {
@@ -530,6 +533,7 @@ func runPlan(args []string, ctx app.App) error {
 	outputPath := fs.String("out", plan.DefaultPlanPath, "plan output path")
 	aspect := fs.String("aspect", "16:9", "output aspect ratio")
 	noSemantic := fs.Bool("no-semantic", false, "disable semantic visual beat planning for this run")
+	allAssets := fs.Bool("all-assets", false, "require the plan to use every available visual asset")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -550,7 +554,7 @@ func runPlan(args []string, ctx app.App) error {
 		}
 	}
 	session.Start("Preparing edit plan")
-	result, err := plan.BuildWithDependencies(context.Background(), plan.Options{AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect, SemanticEnabled: semanticEnabled}, deps, func(current, total int, message string) {
+	result, err := plan.BuildWithDependencies(context.Background(), plan.Options{IndexPath: *indexPath, AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect, SemanticEnabled: semanticEnabled, AllAssets: *allAssets}, deps, func(current, total int, message string) {
 		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
 	})
 	if err != nil {

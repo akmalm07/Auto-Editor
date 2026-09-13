@@ -17,7 +17,7 @@ func (c Client) Plan(ctx context.Context, request plan.SemanticRequest) ([]plan.
 	if err != nil {
 		return nil, err
 	}
-	prompt := "Create a constrained visual edit plan. Split the supplied timed transcript words into 2-6 coherent visual beats when the narration changes topic, scene, action, emotion, or explicitly signals a transition. Every transcript word must be covered exactly once by contiguous beats. Select only an asset_id from the supplied assets. Use the asset metadata and optional style preferences to match each beat's meaning. Do not invent assets, timestamps, or facts. Return concise roles and rationales. Input: " + string(data)
+	prompt := "Create a constrained visual edit plan. Split the supplied timed transcript words into coherent visual beats when the narration changes topic, scene, action, emotion, or explicitly signals a transition. Every transcript word must be covered exactly once by contiguous beats. Select only an asset_id from the supplied assets. Use the asset metadata and optional style preferences to match each beat's meaning. Do not invent assets, timestamps, or facts. Return concise roles and rationales. If all_assets is true, use every supplied asset at least once. Input: " + string(data)
 	var response struct {
 		Beats []plan.SemanticBeat `json:"beats"`
 	}

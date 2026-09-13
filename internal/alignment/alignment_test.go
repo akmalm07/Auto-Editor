@@ -66,10 +66,17 @@ func TestBuildRejectsInputsChangedAfterIngest(t *testing.T) {
 	}
 }
 
-func TestTranscriptTokensRejectsInvalidTimestamps(t *testing.T) {
-	_, err := transcriptTokens(asr.Transcript{Text: "one two", Words: []asr.Word{{Text: "one", StartMS: 100, EndMS: 200}, {Text: "two", StartMS: 150, EndMS: 300}}})
-	if err == nil {
-		t.Fatal("expected timestamp validation error")
+func TestTranscriptTokensNormalizesOverlappingTimestamps(t *testing.T) {
+	tokens, repairs, err := transcriptTokens(asr.Transcript{Text: "one two", Words: []asr.Word{{Text: "one", StartMS: 100, EndMS: 200}, {Text: "two", StartMS: 150, EndMS: 300}}})
+	if err != nil || repairs != 1 || tokens[1].StartMS != 200 {
+		t.Fatalf("unexpected normalized timestamps: tokens=%#v repairs=%d err=%v", tokens, repairs, err)
+	}
+}
+
+func TestTranscriptTokensRepairsZeroLengthTimestamps(t *testing.T) {
+	tokens, repairs, err := transcriptTokens(asr.Transcript{Text: "one two", Words: []asr.Word{{Text: "one", StartMS: 100, EndMS: 100}, {Text: "two", StartMS: 300, EndMS: 400}}})
+	if err != nil || repairs != 1 || tokens[0].EndMS != 300 {
+		t.Fatalf("unexpected repaired timestamps: tokens=%#v repairs=%d err=%v", tokens, repairs, err)
 	}
 }
 
