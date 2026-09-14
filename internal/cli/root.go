@@ -21,6 +21,7 @@ import (
 	"auto-editor/internal/plan"
 	planopenai "auto-editor/internal/planopenai"
 	"auto-editor/internal/project"
+	"auto-editor/internal/projectexport"
 	"auto-editor/internal/render"
 	"auto-editor/internal/ui/loading"
 )
@@ -91,6 +92,8 @@ func runCommand(args []string, ctx app.App) error {
 		return runStatus(args[1:], ctx)
 	case "render":
 		return runRender(args[1:], ctx)
+	case "export-project":
+		return runExportProject(args[1:], ctx)
 	case "review":
 		return runPlaceholder("review", ctx)
 	default:
@@ -533,7 +536,9 @@ func runPlan(args []string, ctx app.App) error {
 	outputPath := fs.String("out", plan.DefaultPlanPath, "plan output path")
 	aspect := fs.String("aspect", "16:9", "output aspect ratio")
 	noSemantic := fs.Bool("no-semantic", false, "disable semantic visual beat planning for this run")
-	allAssets := fs.Bool("all-assets", false, "require the plan to use every available visual asset")
+	allAssets := fs.Bool("all-assets", false, "require the plan to use every visual and audio cue asset")
+	allViewable := fs.Bool("all-viewable-assets", false, "require every image and video asset")
+	allAudio := fs.Bool("all-audio-assets", false, "include every audio sound-effect asset")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -554,7 +559,7 @@ func runPlan(args []string, ctx app.App) error {
 		}
 	}
 	session.Start("Preparing edit plan")
-	result, err := plan.BuildWithDependencies(context.Background(), plan.Options{IndexPath: *indexPath, AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect, SemanticEnabled: semanticEnabled, AllAssets: *allAssets}, deps, func(current, total int, message string) {
+	result, err := plan.BuildWithDependencies(context.Background(), plan.Options{IndexPath: *indexPath, AlignmentPath: filepath.Join(filepath.Dir(*indexPath), "alignment.json"), AssetsPath: *assetsPath, StylePath: *stylePath, AspectRatio: *aspect, SemanticEnabled: semanticEnabled, AllAssets: *allAssets, AllViewableAssets: *allViewable, AllAudioAssets: *allAudio}, deps, func(current, total int, message string) {
 		session.Update(fmt.Sprintf("[%d/%d] %s", current, total, message))
 	})
 	if err != nil {
@@ -637,6 +642,41 @@ func runPlaceholder(name string, ctx app.App) error {
 	return nil
 }
 
+func runExportProject(args []string, ctx app.App) error {
+	fs := flag.NewFlagSet("export-project", flag.ContinueOnError)
+	fs.SetOutput(ctx.Err)
+	planPath := fs.String("plan", plan.DefaultPlanPath, "edit plan path")
+	configPath := fs.String("config", config.DefaultConfigName, "config file path")
+	outputDir := fs.String("out", "output/project", "exported editor project directory")
+	format := fs.String("format", "xml", "export format (currently FCPXML XML)")
+	kdenlive := fs.Bool("kdenlive", false, "generate a native-style Kdenlive MLT project")
+	copyAssets := fs.Bool("copy-assets", true, "copy source media into the exported project")
+	linkAssets := fs.Bool("link-assets", false, "link original source media instead of copying")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *kdenlive {
+		*format = "kdenlive"
+	}
+	if *format != "xml" && *format != "fcpxml" && *format != "kdenlive" {
+		return fmt.Errorf("unsupported export format %q; currently supported: xml", *format)
+	}
+	cfg, err := config.Read(*configPath)
+	if err != nil {
+		return err
+	}
+	copy := *copyAssets
+	if *linkAssets {
+		copy = false
+	}
+	result, err := projectexport.Export(projectexport.Options{PlanPath: *planPath, OutputDir: *outputDir, CopyAssets: copy, Format: *format, Width: cfg.Render.Width, Height: cfg.Render.Height, FPS: cfg.Render.FPS})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(ctx.Out, "ok: exported %s project to %s (%d source asset(s))\n", *format, filepath.Clean(result.OutputDir), result.Copied)
+	return nil
+}
+
 func printRootUsage(ctx app.App) {
 	fmt.Fprintf(ctx.Out, `%s
 
@@ -653,6 +693,7 @@ Commands:
   run      run the pipeline through a selected stage
   status   show project artifacts and the next command
   render   render the current timeline
+  export-project  export an editable XML or Kdenlive project package
   review   score and revise a render
   version  print the CLI version
 

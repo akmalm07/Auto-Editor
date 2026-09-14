@@ -112,7 +112,10 @@ func concatClips(ctx context.Context, runner Runner, workDir string, clips []str
 func muxFinal(ctx context.Context, runner Runner, workDir, videoPath, voiceoverPath, captionPath string, musicTracks []plan.AudioTrack, outputPath string, settings config.RenderConfig) error {
 	args := []string{"-hide_banner", "-nostdin", "-y", "-i", videoPath, "-i", voiceoverPath}
 	for _, track := range musicTracks {
-		args = append(args, "-stream_loop", "-1", "-i", track.Path)
+		if track.Loop {
+			args = append(args, "-stream_loop", "-1")
+		}
+		args = append(args, "-i", track.Path)
 	}
 	if captionPath != "" {
 		args = append(args, "-vf", "ass="+filepath.Base(captionPath))
@@ -120,12 +123,22 @@ func muxFinal(ctx context.Context, runner Runner, workDir, videoPath, voiceoverP
 	if len(musicTracks) == 0 {
 		args = append(args, "-map", "0:v:0", "-map", "1:a:0")
 	} else {
-		filters := make([]string, 0, len(musicTracks)+2)
+		filters := make([]string, 0, len(musicTracks)+4)
 		musicLabels := make([]string, 0, len(musicTracks))
+		sfxLabels := make([]string, 0, len(musicTracks))
+		hasLoopingMusic := false
 		for index, track := range musicTracks {
+			if track.Loop {
+				hasLoopingMusic = true
+			}
 			input := index + 2
 			label := fmt.Sprintf("m%d", index)
 			volumeDB, fadeInMS, fadeOutMS := settings.MusicVolumeDB, settings.MusicFadeInMS, settings.MusicFadeOutMS
+			if !track.Loop {
+				// Sound-effect cues must not inherit the background music fades;
+				// short cues can otherwise be faded out before becoming audible.
+				volumeDB, fadeInMS, fadeOutMS = 0, 0, 0
+			}
 			if track.VolumeDB != 0 {
 				volumeDB = track.VolumeDB
 			}
@@ -147,14 +160,32 @@ func muxFinal(ctx context.Context, runner Runner, workDir, videoPath, voiceoverP
 			}
 			filter += "[" + label + "]"
 			filters = append(filters, filter)
-			musicLabels = append(musicLabels, "["+label+"]")
+			if track.Loop {
+				musicLabels = append(musicLabels, "["+label+"]")
+			} else {
+				sfxLabels = append(sfxLabels, "["+label+"]")
+			}
 		}
-		filters = append(filters, strings.Join(musicLabels, "")+fmt.Sprintf("amix=inputs=%d:duration=longest:dropout_transition=0[music]", len(musicTracks)))
-		if settings.MusicDucking {
-			filters = append(filters, "[music][1:a]sidechaincompress=threshold=0.02:ratio="+formatFloat(settings.MusicDuckRatio)+":attack=20:release=400[ducked]", "[1:a][ducked]amix=inputs=2:duration=first:dropout_transition=0[aout]")
-		} else {
-			filters = append(filters, "[1:a][music]amix=inputs=2:duration=first:dropout_transition=0[aout]")
+		mix := func(labels []string, name string) string {
+			if len(labels) == 1 {
+				return labels[0]
+			}
+			filters = append(filters, strings.Join(labels, "")+fmt.Sprintf("amix=inputs=%d:duration=longest:dropout_transition=0[%s]", len(labels), name))
+			return "[" + name + "]"
 		}
+		finalLabels := []string{"[1:a]"}
+		if len(musicLabels) > 0 {
+			music := mix(musicLabels, "music")
+			if settings.MusicDucking && hasLoopingMusic {
+				filters = append(filters, music+"[1:a]sidechaincompress=threshold=0.02:ratio="+formatFloat(settings.MusicDuckRatio)+":attack=20:release=400[ducked]")
+				music = "[ducked]"
+			}
+			finalLabels = append(finalLabels, music)
+		}
+		if len(sfxLabels) > 0 {
+			finalLabels = append(finalLabels, mix(sfxLabels, "sfx"))
+		}
+		filters = append(filters, strings.Join(finalLabels, "")+fmt.Sprintf("amix=inputs=%d:duration=first:dropout_transition=0[aout]", len(finalLabels)))
 		args = append(args, "-filter_complex", strings.Join(filters, ";"), "-map", "0:v:0", "-map", "[aout]")
 	}
 	args = append(args, "-c:v", settings.VideoCodec, "-crf", strconv.Itoa(settings.CRF), "-preset", settings.Preset, "-c:a", settings.AudioCodec, "-b:a", settings.AudioBitrate, "-shortest", "-movflags", "+faststart", outputPath)

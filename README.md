@@ -111,6 +111,8 @@ auto-editor run --through render --all-assets
 
 If the semantic response omits an asset, the planner uses a deterministic word-range split to satisfy the constraint. If there are more assets than transcript words, planning fails with an actionable error.
 
+Use `--all-viewable-assets` to require every image and video, or `--all-audio-assets` to include every audio asset other than the voiceover as timed sound-effect cues. `--all-assets` combines both requirements.
+
 When `style.json` contains completed semantic `planning_preferences`, the planner applies them only as soft ranking inputs. It deterministically compares meaningful preference terms with completed literal/editorial asset metadata, weights matches by the reference set's semantic confidence, and uses original asset order to break ties. Preferences never remove an asset, invent an ID, alter narration timing, or override source-duration limits. The version 5 plan artifact records source hashes, semantic beat choices and rationales, an explicit `hold_last_frame` policy when a short video must fill a longer planned slot, and optional background-music tracks.
 
 Explicit-path command variants remain available when artifacts live outside the standard project location:
@@ -143,3 +145,20 @@ auto-editor run --through render
 ```
 
 Rendering refuses to replace an existing final file unless `--force` is supplied. It writes `.auto-editor/render-report.json` with the plan hash, verified source hashes, effective settings, output media facts, and any final-frame hold warnings. FFmpeg and ffprobe must be available on `PATH`, or configured under `render` in `auto-editor.config.json`.
+
+## Exporting an editable project
+
+`export-project` writes an XML interchange timeline using the FCPXML 1.9 schema plus a portable project
+package. The package contains `auto-editor.xml`, `manifest.json`, an import
+guide, and copied source media under `assets/` by default:
+
+```powershell
+auto-editor export-project --out output/project
+auto-editor export-project --link-assets --out output/project
+auto-editor export-project --kdenlive --out output/kdenlive-project
+```
+
+Import `auto-editor.xml` through the target editor's XML import workflow. If
+media is offline, relink it to the package's `assets/` directory (or to the
+original paths when using `--link-assets`).
+Use `--kdenlive` to write `auto-editor.kdenlive`, a Kdenlive MLT project.

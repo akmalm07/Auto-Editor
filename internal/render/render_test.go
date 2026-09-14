@@ -89,6 +89,27 @@ func TestWriteASSEscapesText(t *testing.T) {
 	}
 }
 
+func TestMuxFinalKeepsSoundEffectsOutsideMusicDucking(t *testing.T) {
+	runner := &recordingRunner{}
+	settings := config.Default().Render
+	err := muxFinal(context.Background(), runner, t.TempDir(), "video.mp4", "voice.wav", "", []plan.AudioTrack{
+		{AssetID: "music", Path: "music.wav", StartMS: 0, EndMS: 1000, Loop: true},
+		{AssetID: "cue", Path: "cue.wav", StartMS: 250, EndMS: 500, SourceStartMS: 0, VolumeDB: -6},
+	}, filepath.Join(t.TempDir(), "out.mp4"), settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(runner.filter, "[m0][1:a]sidechaincompress") {
+		t.Fatalf("music ducking filter missing: %s", runner.filter)
+	}
+	if !strings.Contains(runner.filter, "[m1]") || !strings.Contains(runner.filter, "[1:a][ducked][m1]amix=inputs=3") {
+		t.Fatalf("sound effects were not mixed separately: %s", runner.filter)
+	}
+	if !strings.Contains(runner.filter, "volume=-6.00dB,adelay=250|250[m1]") {
+		t.Fatalf("sound-effect cue inherited a music fade: %s", runner.filter)
+	}
+}
+
 func TestBuildWithFFmpeg(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
@@ -157,6 +178,19 @@ func runFFmpeg(t *testing.T, executable string, args ...string) {
 }
 
 type fakeRunner struct{}
+
+type recordingRunner struct{ filter string }
+
+func (r *recordingRunner) Run(_ context.Context, _, executable string, args ...string) ([]byte, error) {
+	if executable == "ffmpeg" {
+		for i, arg := range args {
+			if arg == "-filter_complex" && i+1 < len(args) {
+				r.filter = args[i+1]
+			}
+		}
+	}
+	return nil, nil
+}
 
 func (fakeRunner) Run(_ context.Context, _, executable string, args ...string) ([]byte, error) {
 	if executable == "ffprobe" {

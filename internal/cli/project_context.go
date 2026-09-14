@@ -73,7 +73,7 @@ func inProjectDirectory(path string, action func() error) error {
 
 func commandUsesProject(command string) bool {
 	switch command {
-	case "ingest", "align", "analyze-assets", "analyze-style", "plan", "run", "status":
+	case "ingest", "align", "analyze-assets", "analyze-style", "plan", "run", "status", "render", "export-project":
 		return true
 	default:
 		return false

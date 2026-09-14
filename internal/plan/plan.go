@@ -29,6 +29,7 @@ type Result struct {
 	Visuals     []Visual            `json:"visuals"`
 	Captions    []Caption           `json:"captions"`
 	AudioTracks []AudioTrack        `json:"audio_tracks,omitempty"`
+	AudioCues   []AudioCue          `json:"audio_cues,omitempty"`
 	Warnings    []ingest.Diagnostic `json:"warnings,omitempty"`
 }
 type Format struct {
@@ -77,12 +78,24 @@ type AudioTrack struct {
 	DuckUnderVoiceover bool    `json:"duck_under_voiceover"`
 	FadeInMS           int64   `json:"fade_in_ms"`
 	FadeOutMS          int64   `json:"fade_out_ms"`
+	Loop               bool    `json:"loop,omitempty"`
+}
+type AudioCue struct {
+	AssetID       string  `json:"asset_id"`
+	Path          string  `json:"path"`
+	SHA256        string  `json:"sha256"`
+	StartMS       int64   `json:"start_ms"`
+	SourceStartMS int64   `json:"source_start_ms"`
+	DurationMS    int64   `json:"duration_ms"`
+	VolumeDB      float64 `json:"volume_db,omitempty"`
 }
 type Options struct {
 	AlignmentPath, AssetsPath, StylePath, OutputPath string
 	AspectRatio                                      string
 	SemanticEnabled                                  bool
 	AllAssets                                        bool
+	AllViewableAssets                                bool
+	AllAudioAssets                                   bool
 	IndexPath                                        string
 }
 type StageReporter func(current, total int, message string)
@@ -130,6 +143,12 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 	if len(visuals) == 0 {
 		return Result{}, fmt.Errorf("asset artifact contains no visual assets")
 	}
+	audioCues := make([]analyzeassets.Asset, 0)
+	for _, asset := range assetsResult.Assets {
+		if asset.Kind == ingest.KindAudio && asset.AssetID != alignmentResult.Voiceover.ID {
+			audioCues = append(audioCues, asset)
+		}
+	}
 	duration := alignmentResult.Voiceover.Audio.DurationMS
 	if duration <= 0 && len(alignmentResult.Segments) > 0 {
 		duration = alignmentResult.Segments[len(alignmentResult.Segments)-1].EndMS
@@ -138,7 +157,7 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 	if options.IndexPath != "" {
 		if index, indexErr := ingest.ReadIndex(resolve(options.IndexPath)); indexErr == nil {
 			for _, music := range index.Music {
-				result.AudioTracks = append(result.AudioTracks, AudioTrack{AssetID: music.ID, Path: music.Path, SHA256: music.SHA256, StartMS: 0, EndMS: duration, DuckUnderVoiceover: true})
+				result.AudioTracks = append(result.AudioTracks, AudioTrack{AssetID: music.ID, Path: music.Path, SHA256: music.SHA256, StartMS: 0, EndMS: duration, DuckUnderVoiceover: true, Loop: true})
 			}
 		} else {
 			result.Warnings = append(result.Warnings, ingest.Diagnostic{Level: "warning", Field: "inputs.music", Message: "could not read music records: " + indexErr.Error()})
@@ -150,7 +169,7 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 		result.Warnings = append(result.Warnings, ingest.Diagnostic{Level: "warning", Field: "style", Message: "style artifact not found; using deterministic asset selection"})
 	}
 	visuals, result.Selection = rankVisualAssets(visuals, style, styleErr == nil)
-	if options.SemanticEnabled && deps.SemanticPlanner != nil {
+	if options.SemanticEnabled && deps.SemanticPlanner != nil && !options.AllViewableAssets {
 		if report != nil {
 			report(1, 1, "Planning semantic visual beats")
 		}
@@ -185,6 +204,9 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 				result.Captions = append(result.Captions, Caption{ID: fmt.Sprintf("caption_%03d", index), StartMS: start, EndMS: end, Text: wordsText(alignmentResult.Transcript.Words[beat.WordFrom : beat.WordTo+1])})
 			}
 			result.Visuals = fillTimelineGaps(result.Visuals, duration)
+			if options.AllAudioAssets || options.AllAssets {
+				result.AudioCues = distributeAudioCues(audioCues, duration)
+			}
 			return result, nil
 		}
 		result.Semantic = SemanticPlan{Status: "failed"}
@@ -192,7 +214,7 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 	} else if options.SemanticEnabled {
 		result.Warnings = append(result.Warnings, ingest.Diagnostic{Level: "warning", Field: "planning.semantic", Message: "semantic planning was not configured; using deterministic segments"})
 	}
-	if options.AllAssets {
+	if options.AllAssets || options.AllViewableAssets {
 		beats, forcedErr := forcedBeats(alignmentResult.Transcript.Words, visuals)
 		if forcedErr != nil {
 			return Result{}, forcedErr
@@ -209,6 +231,9 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 			}
 			result.Visuals = append(result.Visuals, Visual{ID: fmt.Sprintf("visual_%03d", index), AssetID: asset.AssetID, StartMS: start, EndMS: end, SourceEndMS: sourceEnd, SourceSHA256: asset.SHA256, SourceFill: "hold_last_frame", Fit: "cover", Role: asset.Editorial.Intent, SemanticRationale: "--all-assets constraint"})
 			result.Captions = append(result.Captions, Caption{ID: fmt.Sprintf("caption_%03d", index), StartMS: start, EndMS: end, Text: wordsText(alignmentResult.Transcript.Words[beat.WordFrom : beat.WordTo+1])})
+		}
+		if options.AllAssets || options.AllAudioAssets {
+			result.AudioCues = distributeAudioCues(audioCues, duration)
 		}
 		result.Visuals = fillTimelineGaps(result.Visuals, duration)
 		return result, nil
@@ -233,8 +258,34 @@ func BuildWithDependencies(ctx context.Context, options Options, deps Dependenci
 		result.Visuals = append(result.Visuals, Visual{ID: fmt.Sprintf("visual_%03d", index), AssetID: asset.AssetID, StartMS: segment.StartMS, EndMS: end, SourceEndMS: sourceEnd, SourceSHA256: asset.SHA256, SourceFill: "hold_last_frame", Fit: "cover", Role: role})
 		result.Captions = append(result.Captions, Caption{ID: fmt.Sprintf("caption_%03d", index), StartMS: segment.StartMS, EndMS: end, Text: segment.Text, ScriptWordFrom: segment.ScriptWordFrom, ScriptWordTo: segment.ScriptWordTo})
 	}
+	if options.AllAudioAssets || options.AllAssets {
+		result.AudioCues = distributeAudioCues(audioCues, duration)
+	}
 	result.Visuals = fillTimelineGaps(result.Visuals, duration)
 	return result, nil
+}
+
+func distributeAudioCues(assets []analyzeassets.Asset, duration int64) []AudioCue {
+	if len(assets) == 0 || duration <= 0 {
+		return nil
+	}
+	step := duration / int64(len(assets))
+	if step < 1 {
+		step = 1
+	}
+	cues := make([]AudioCue, 0, len(assets))
+	for i, asset := range assets {
+		start := int64(i) * step
+		if start >= duration {
+			start = duration - 1
+		}
+		length := step
+		if i == len(assets)-1 || start+length > duration {
+			length = duration - start
+		}
+		cues = append(cues, AudioCue{AssetID: asset.AssetID, Path: asset.Path, SHA256: asset.SHA256, StartMS: start, DurationMS: length, VolumeDB: -6})
+	}
+	return cues
 }
 
 // fillTimelineGaps keeps the picture continuous during narration pauses by

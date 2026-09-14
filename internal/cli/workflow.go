@@ -51,7 +51,9 @@ func runPipeline(args []string, ctx app.App) error {
 	fs.SetOutput(ctx.Err)
 	through := fs.String("through", "plan", "last stage to run: ingest, align, analyze-assets, analyze-style, plan, or render")
 	noSemantic := fs.Bool("no-semantic", false, "disable semantic analysis for this run")
-	allAssets := fs.Bool("all-assets", false, "require the plan to use every available visual asset")
+	allAssets := fs.Bool("all-assets", false, "require the plan to use every visual and audio cue asset")
+	allViewable := fs.Bool("all-viewable-assets", false, "require every image and video asset")
+	allAudio := fs.Bool("all-audio-assets", false, "include every audio sound-effect asset")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -106,6 +108,12 @@ func runPipeline(args []string, ctx app.App) error {
 	planArgs := append([]string(nil), semanticArgs...)
 	if *allAssets {
 		planArgs = append(planArgs, "--all-assets")
+	}
+	if *allViewable {
+		planArgs = append(planArgs, "--all-viewable-assets")
+	}
+	if *allAudio {
+		planArgs = append(planArgs, "--all-audio-assets")
 	}
 	if err := runStage("plan", func() error { return runPlan(planArgs, ctx) }); err != nil {
 		return err

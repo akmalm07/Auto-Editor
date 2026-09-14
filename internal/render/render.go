@@ -287,6 +287,18 @@ func verifySources(root string, p plan.Result, assets analyzeassets.Result, alig
 		relPath, _ := filepath.Rel(root, path)
 		sources = append(sources, Source{AssetID: track.AssetID, Path: filepath.ToSlash(relPath), SHA256: track.SHA256, Kind: "music"})
 	}
+	for _, cue := range p.AudioCues {
+		if cue.AssetID == "" || cue.Path == "" || cue.SHA256 == "" || cue.StartMS < 0 || cue.DurationMS <= 0 || cue.StartMS+cue.DurationMS > p.Format.DurationMS || cue.VolumeDB < -60 || cue.VolumeDB > 12 {
+			return "", nil, nil, fmt.Errorf("sound-effect cue %q has invalid metadata", cue.AssetID)
+		}
+		path := artifact.ResolvePath(root, cue.Path)
+		if err := verifyHash(path, cue.SHA256); err != nil {
+			return "", nil, nil, fmt.Errorf("sound-effect asset %s changed since planning: %w; run ingest, analyze-assets, and plan again", cue.Path, err)
+		}
+		musicTracks = append(musicTracks, plan.AudioTrack{AssetID: cue.AssetID, Path: path, SHA256: cue.SHA256, StartMS: cue.StartMS, EndMS: cue.StartMS + cue.DurationMS, SourceStartMS: cue.SourceStartMS, VolumeDB: cue.VolumeDB, Loop: false})
+		relPath, _ := filepath.Rel(root, path)
+		sources = append(sources, Source{AssetID: cue.AssetID, Path: filepath.ToSlash(relPath), SHA256: cue.SHA256, Kind: "sound_effect"})
+	}
 	return voicePath, sources, musicTracks, nil
 }
 
@@ -341,6 +353,11 @@ func validatePlan(p plan.Result, s config.RenderConfig) error {
 	for _, track := range p.AudioTracks {
 		if track.AssetID == "" || track.Path == "" || track.SHA256 == "" || track.StartMS < 0 || track.EndMS <= track.StartMS || track.EndMS > p.Format.DurationMS {
 			return fmt.Errorf("music track %q has unsupported or invalid timing", track.AssetID)
+		}
+	}
+	for _, cue := range p.AudioCues {
+		if cue.AssetID == "" || cue.Path == "" || cue.SHA256 == "" || cue.StartMS < 0 || cue.DurationMS <= 0 || cue.StartMS+cue.DurationMS > p.Format.DurationMS || cue.VolumeDB < -60 || cue.VolumeDB > 12 {
+			return fmt.Errorf("sound-effect cue %q has unsupported or invalid timing", cue.AssetID)
 		}
 	}
 	return nil
