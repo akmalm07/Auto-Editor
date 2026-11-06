@@ -2,6 +2,34 @@
 
 `auto-editor` is a Go-first CLI for an agentic video-editing system. It currently initializes projects, validates and indexes inputs, aligns a voiceover transcript to its script, and analyzes visual assets.
 
+## Workflow architecture
+
+TypeScript owns workflow routing through the official
+[`@langchain/langgraph`](https://www.npmjs.com/package/@langchain/langgraph)
+package. The LangGraph state machine lives in `workflow/src/graph.ts` and treats
+the Go CLI as its tool boundary. Go retains all deterministic domain systems:
+input validation, media probing, hashing, transcription/alignment, artifact
+analysis, planning constraints, rendering, and artifact writes.
+
+```mermaid
+flowchart LR
+    G[TypeScript LangGraph\nworkflow/src/graph.ts] --> C[Go workflow-context\ndeterministic project facts]
+    C --> I[Go: ingest\nindex.json]
+    I --> A[Go: align\nalignment.json]
+    A --> AA[Go: analyze-assets\nassets.json]
+    AA --> R{Reference sets?}
+    R -- yes --> AS[Go: analyze-style\nstyle.json]
+    R -- no --> P[Go: plan\nplan.json]
+    AS --> P
+    P --> RE[Go: render\nrender.mp4 + report.json]
+    RE --> V[review\nfuture]
+```
+
+LangGraph is used for all node execution and edges, including the conditional
+style-analysis branch. It invokes `auto-editor workflow-context --json` to read
+the reference-set fact, then runs each selected Go stage as a separate tool
+process. The Go command does not contain pipeline routing or a `run` command.
+
 ## Future: semantic-analysis providers
 
 Asset semantic analysis is designed behind a provider-neutral interface. The default configuration uses the OpenAI vision provider when an API key is available; pass `--no-semantic` to skip it for a single analysis run.
@@ -17,13 +45,21 @@ auto-editor analyze-assets
 auto-editor plan
 ```
 
-To run the current deterministic-to-planning pipeline in one command:
+Install the TypeScript workflow dependencies once:
 
 ```powershell
-auto-editor run --through plan
+npm install
 ```
 
-It runs ingest, alignment, and asset analysis; it runs style analysis only when the manifest has reference sets. Use `auto-editor status` to see which standard artifacts exist and the next suggested command. From elsewhere on disk, use `auto-editor --project C:\path\to\project run --through plan`.
+Run the LangGraph workflow through planning:
+
+```powershell
+npm run workflow -- --project C:\path\to\project --through plan
+```
+
+It runs Go's ingest, alignment, and asset-analysis tools; it invokes style
+analysis only when Go reports reference sets. Use `auto-editor status` to see
+which standard artifacts exist and the next suggested command.
 
 For repeatable Windows integration checks, use the bundled PowerShell runner. It builds the CLI executable, runs `status`, executes the pipeline, then prints `status` again:
 
@@ -31,7 +67,8 @@ For repeatable Windows integration checks, use the bundled PowerShell runner. It
 & C:\Users\dev\tools\auto-editor\scripts\integration-test.ps1 -Project C:\Users\dev\tools\test\auto-test\test-1
 ```
 
-The script always builds the CLI and runs the complete pipeline through rendering.
+The script builds the Go CLI, then asks the TypeScript LangGraph workflow to run
+the complete pipeline through rendering.
 
 Future work should add adapters for additional vision-capable providers, such as Claude, Gemini, and local models. Every adapter should return the same structured asset analysis—summary, subjects, actions, settings, mood, and visible text—so planning and rendering stay independent of the chosen model provider.
 
@@ -100,13 +137,13 @@ If the key, provider, or semantic pass is unavailable, deterministic style analy
 
 `plan` combines `alignment.json` and `assets.json` into `.auto-editor/plan.json`. By default, a bounded semantic planning pass turns the word-timed narration into two to six coherent visual beats and selects an existing asset ID for each beat. It uses narration topic/scene/action/emotion changes, asset literal and editorial metadata, and optional reference-style preferences. The output is constrained and verified: every transcript word must be covered exactly once, and no asset ID can be invented. If the provider is unavailable or returns an invalid timeline, planning records a warning and falls back to the deterministic one-visual-per-alignment-segment behavior.
 
-Use `auto-editor plan --no-semantic` to force that deterministic fallback for one run. `auto-editor run --no-semantic` also disables semantic planning.
+Use `auto-editor plan --no-semantic` to force that deterministic fallback for one run. Pass `--no-semantic` to the TypeScript workflow to disable semantic asset analysis, style analysis, and planning together.
 
 Pass `--all-assets` to require every eligible visual asset to appear at least once:
 
 ```powershell
 auto-editor plan --all-assets
-auto-editor run --through render --all-assets
+npm run workflow -- --project C:\path\to\project --through render --all-assets
 ```
 
 If the semantic response omits an asset, the planner uses a deterministic word-range split to satisfy the constraint. If there are more assets than transcript words, planning fails with an actionable error.
@@ -123,7 +160,7 @@ auto-editor analyze-style --index .auto-editor/index.json --config auto-editor.c
 auto-editor plan --index .auto-editor/index.json --assets .auto-editor/assets.json --style .auto-editor/style.json --out .auto-editor/plan.json --aspect 16:9
 ```
 
-`analyze-style` requires at least one reference-video set. `auto-editor run --through plan` skips style analysis when no references exist; the planner then uses deterministic asset order.
+`analyze-style` requires at least one reference-video set. The LangGraph workflow skips its style node when Go's `workflow-context` tool reports no references; the planner then uses deterministic asset order.
 
 ## Rendering
 
@@ -133,7 +170,7 @@ Provide music during initialization (the flag may be repeated), or add paths und
 
 ```powershell
 auto-editor init --name launch-video --script script.txt --voiceover voiceover.wav --asset assets --music music/background.mp3
-auto-editor run --through render
+npm run workflow -- --project C:\path\to\project --through render
 ```
 
 The related settings are `render.music_volume_db` (default `-18`), `render.music_fade_in_ms`/`render.music_fade_out_ms` (default `500`), `render.music_ducking` (default `true`), and `render.music_duck_ratio` (default `8`).
@@ -141,7 +178,7 @@ The related settings are `render.music_volume_db` (default `-18`), `render.music
 ```powershell
 auto-editor render --out output/render.mp4
 auto-editor render --no-captions
-auto-editor run --through render
+npm run workflow -- --project C:\path\to\project --through render
 ```
 
 Rendering refuses to replace an existing final file unless `--force` is supplied. It writes `.auto-editor/render-report.json` with the plan hash, verified source hashes, effective settings, output media facts, and any final-frame hold warnings. FFmpeg and ffprobe must be available on `PATH`, or configured under `render` in `auto-editor.config.json`.

@@ -86,10 +86,10 @@ func runCommand(args []string, ctx app.App) error {
 		return runAnalyzeStyle(args[1:], ctx)
 	case "plan":
 		return runPlan(args[1:], ctx)
-	case "run":
-		return runPipeline(args[1:], ctx)
 	case "status":
 		return runStatus(args[1:], ctx)
+	case "workflow-context":
+		return runWorkflowContext(args[1:], ctx)
 	case "render":
 		return runRender(args[1:], ctx)
 	case "export-project":
@@ -690,7 +690,6 @@ Commands:
   analyze-assets  inspect assets and optionally analyze their visual content
   analyze-style   measure reference-video style facts
   plan     draft an edit timeline
-  run      run the pipeline through a selected stage
   status   show project artifacts and the next command
   render   render the current timeline
   export-project  export an editable XML or Kdenlive project package
@@ -725,12 +724,9 @@ Add --no-semantic to skip semantic style analysis for one run.
 Plan example:
   auto-editor plan
 
-Pipeline example:
-  auto-editor run --through plan
-
 Render example:
   auto-editor render --out output/render.mp4
 
-Use --no-semantic with analyze-assets, analyze-style, or run to skip AI analysis.
+Use --no-semantic with analyze-assets or analyze-style to skip AI analysis.
 `, ctx.Name)
 }

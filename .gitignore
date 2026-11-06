@@ -23,6 +23,9 @@ coverage.out
 # Go workspace cache
 .gocache/
 
+# TypeScript dependencies
+node_modules/
+
 # OS and editor noise
 .DS_Store
 Thumbs.db

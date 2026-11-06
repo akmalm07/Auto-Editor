@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -16,128 +17,27 @@ import (
 	"auto-editor/internal/render"
 )
 
-type pipelineStage int
-
-const (
-	stageIngest pipelineStage = iota + 1
-	stageAlign
-	stageAnalyzeAssets
-	stageAnalyzeStyle
-	stagePlan
-	stageRender
-)
-
-func parsePipelineStage(value string) (pipelineStage, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "ingest":
-		return stageIngest, nil
-	case "align":
-		return stageAlign, nil
-	case "analyze-assets":
-		return stageAnalyzeAssets, nil
-	case "analyze-style":
-		return stageAnalyzeStyle, nil
-	case "plan":
-		return stagePlan, nil
-	case "render":
-		return stageRender, nil
-	default:
-		return 0, fmt.Errorf("invalid --through value %q: expected ingest, align, analyze-assets, analyze-style, plan, or render", value)
-	}
+type workflowContext struct {
+	HasReferences bool `json:"has_references"`
 }
 
-func runPipeline(args []string, ctx app.App) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+// runWorkflowContext exposes deterministic project facts for the TypeScript
+// LangGraph orchestrator. It deliberately performs no routing or stage work.
+func runWorkflowContext(args []string, ctx app.App) error {
+	fs := flag.NewFlagSet("workflow-context", flag.ContinueOnError)
 	fs.SetOutput(ctx.Err)
-	through := fs.String("through", "plan", "last stage to run: ingest, align, analyze-assets, analyze-style, plan, or render")
-	noSemantic := fs.Bool("no-semantic", false, "disable semantic analysis for this run")
-	allAssets := fs.Bool("all-assets", false, "require the plan to use every visual and audio cue asset")
-	allViewable := fs.Bool("all-viewable-assets", false, "require every image and video asset")
-	allAudio := fs.Bool("all-audio-assets", false, "include every audio sound-effect asset")
+	jsonOutput := fs.Bool("json", false, "write machine-readable workflow context")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("run does not accept positional arguments")
+	if fs.NArg() != 0 || !*jsonOutput {
+		return fmt.Errorf("workflow-context requires --json and accepts no positional arguments")
 	}
-	lastStage, err := parsePipelineStage(*through)
-	if err != nil {
-		return err
-	}
-
-	runStage := func(name string, action func() error) error {
-		fmt.Fprintf(ctx.Out, "==> %s\n", name)
-		return action()
-	}
-	if err := runStage("ingest", func() error { return runIngest(nil, ctx) }); err != nil {
-		return err
-	}
-	if lastStage == stageIngest {
-		return pipelineComplete(ctx, *through)
-	}
-	if err := runStage("align", func() error { return runAlign(nil, ctx) }); err != nil {
-		return err
-	}
-	if lastStage == stageAlign {
-		return pipelineComplete(ctx, *through)
-	}
-	semanticArgs := []string(nil)
-	if *noSemantic {
-		semanticArgs = []string{"--no-semantic"}
-	}
-	if err := runStage("analyze-assets", func() error { return runAnalyzeAssets(semanticArgs, ctx) }); err != nil {
-		return err
-	}
-	if lastStage == stageAnalyzeAssets {
-		return pipelineComplete(ctx, *through)
-	}
-	references, err := projectHasReferences()
-	if err != nil {
-		return err
-	}
-	if references {
-		if err := runStage("analyze-style", func() error { return runAnalyzeStyle(semanticArgs, ctx) }); err != nil {
-			return err
-		}
-	} else {
-		fmt.Fprintln(ctx.Out, "==> analyze-style (skipped: no reference sets configured)")
-	}
-	if lastStage == stageAnalyzeStyle {
-		return pipelineComplete(ctx, *through)
-	}
-	planArgs := append([]string(nil), semanticArgs...)
-	if *allAssets {
-		planArgs = append(planArgs, "--all-assets")
-	}
-	if *allViewable {
-		planArgs = append(planArgs, "--all-viewable-assets")
-	}
-	if *allAudio {
-		planArgs = append(planArgs, "--all-audio-assets")
-	}
-	if err := runStage("plan", func() error { return runPlan(planArgs, ctx) }); err != nil {
-		return err
-	}
-	if lastStage == stagePlan {
-		return pipelineComplete(ctx, *through)
-	}
-	if err := runStage("render", func() error { return runRender([]string{"--force"}, ctx) }); err != nil {
-		return err
-	}
-	return pipelineComplete(ctx, *through)
-}
-
-func pipelineComplete(ctx app.App, through string) error {
-	fmt.Fprintf(ctx.Out, "ok: pipeline completed through %s\n", through)
-	return nil
-}
-
-func projectHasReferences() (bool, error) {
 	manifest, err := project.ReadManifest(project.DefaultManifestName)
 	if err != nil {
-		return false, fmt.Errorf("read project manifest: %w", err)
+		return fmt.Errorf("read project manifest: %w", err)
 	}
-	return len(manifest.Inputs.ReferenceSets) > 0, nil
+	return json.NewEncoder(ctx.Out).Encode(workflowContext{HasReferences: len(manifest.Inputs.ReferenceSets) > 0})
 }
 
 func runStatus(args []string, ctx app.App) error {

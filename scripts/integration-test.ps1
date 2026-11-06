@@ -37,7 +37,27 @@ try {
     Pop-Location
 }
 
+Write-Host "> npm ci"
+Push-Location $repositoryPath
+try {
+    & npm ci
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm ci exited with code $LASTEXITCODE."
+    }
+} finally {
+    Pop-Location
+}
+
 Invoke-AutoEditor @('--project', $projectPath, 'status')
-Invoke-AutoEditor @('--project', $projectPath, 'run', '--through', 'render', '--all-assets')
+Write-Host ("> npm run workflow -- --project " + $projectPath + " --through render --all-assets --go-command " + $executablePath)
+Push-Location $repositoryPath
+try {
+    & npm run workflow -- --project $projectPath --through render --all-assets --go-command $executablePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "LangGraph workflow exited with code $LASTEXITCODE."
+    }
+} finally {
+    Pop-Location
+}
 Invoke-AutoEditor @('--project', $projectPath, 'status')
-Write-Host "Integration test completed through render."
+Write-Host "Integration test completed through the LangGraph workflow."

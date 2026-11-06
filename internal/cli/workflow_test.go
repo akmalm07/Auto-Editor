@@ -5,6 +5,7 @@ import (
 	"auto-editor/internal/ingest"
 	"auto-editor/internal/project"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,13 +55,25 @@ func TestRunStatusUsesProjectOverrideAndRestoresWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestParsePipelineStage(t *testing.T) {
-	stage, err := parsePipelineStage("analyze-assets")
-	if err != nil || stage != stageAnalyzeAssets {
-		t.Fatalf("parsePipelineStage() = %v, %v", stage, err)
+func TestWorkflowContextReportsReferencesAsJSON(t *testing.T) {
+	root := t.TempDir()
+	manifest := project.NewManifest("test")
+	manifest.Inputs.ReferenceSets = []project.ReferenceSet{{Name: "shorts", Paths: []string{"refs"}}}
+	if err := project.WriteManifest(filepath.Join(root, project.DefaultManifestName), manifest); err != nil {
+		t.Fatal(err)
 	}
-	if stage, err := parsePipelineStage("render"); err != nil || stage != stageRender {
-		t.Fatalf("parsePipelineStage(render) = %v, %v", stage, err)
+	var out, stderr bytes.Buffer
+	if err := Run([]string{"--project", root, "workflow-context", "--json"}, app.New("auto-editor", "test", &out, &stderr)); err != nil {
+		t.Fatal(err)
+	}
+	var context struct {
+		HasReferences bool `json:"has_references"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &context); err != nil {
+		t.Fatalf("workflow context is not JSON: %v", err)
+	}
+	if !context.HasReferences {
+		t.Fatalf("workflow context = %+v, want references", context)
 	}
 }
 
